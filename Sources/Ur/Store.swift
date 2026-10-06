@@ -83,6 +83,7 @@ final class Store {
                 if self.selectedDay.dayKey == self.lastDayKey { self.selectedDay = now.startOfDay }
                 self.lastDayKey = now.dayKey
             }
+            self.yieldPlansToTimer(now)
         }
     }
 
@@ -246,8 +247,30 @@ final class Store {
         if prefs.autoStartDay {
             if workday(t)?.start == nil { startDay(at: t) } else if workday(t)?.end != nil { resumeDay() }
         }
+        // A plan in progress ends where the timer starts.
+        for i in data.entries.indices where data.entries[i].start < t && (data.entries[i].end ?? t) > t {
+            data.entries[i].end = t
+        }
         data.entries.append(Entry(projectID: projectID, start: t, end: nil, note: note))
         selectedDay = t.startOfDay
+    }
+
+    /// A running timer owns the time it covers: plans it runs into are pushed back as it goes,
+    /// and dropped once they have been fully overtaken. Prevents counting the same minutes twice.
+    private func yieldPlansToTimer(_ now: Date) {
+        guard let r = running else { return }
+        let hit = data.entries.indices.filter { i in
+            let x = data.entries[i]
+            guard let end = x.end else { return false }
+            return x.start >= r.start && x.start < now.addingTimeInterval(-30) && end > x.start
+        }
+        guard !hit.isEmpty else { return }
+        var entries = data.entries
+        for i in hit {
+            if entries[i].end! <= now.addingTimeInterval(60) { entries[i].end = nil } else { entries[i].start = now }
+        }
+        entries.removeAll { $0.end == nil && $0.id != r.id }
+        data.entries = entries
     }
 
     func stop(at t: Date = .now) {

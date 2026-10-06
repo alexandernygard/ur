@@ -113,23 +113,38 @@ struct DayHero: View {
     }
 }
 
-/// Inline note for the running entry; commits on Return or when focus leaves.
+/// Note for the running entry. Shown as text until clicked, so it never steals keyboard focus.
 struct RunningNote: View {
     @Environment(Store.self) private var store
     let entry: Entry
     @State private var text = ""
+    @State private var editing = false
     @FocusState private var focused: Bool
 
     var body: some View {
-        TextField("Add a note", text: $text)
-            .textFieldStyle(.plain)
-            .foregroundStyle(Theme.inkSoft)
-            .frame(minWidth: 120, maxWidth: 260)
-            .focused($focused)
-            .onAppear { text = entry.note }
-            .onChange(of: entry.id) { text = entry.note }
-            .onSubmit { store.setNote(entry.id, text); focused = false }
-            .onChange(of: focused) { if !focused { store.setNote(entry.id, text) } }
+        Group {
+            if editing {
+                TextField("Add a note", text: $text)
+                    .textFieldStyle(.plain)
+                    .focused($focused)
+                    .onAppear { text = entry.note; focused = true }
+                    .onSubmit { commit() }
+                    .onChange(of: focused) { if !focused { commit() } }
+                    .onExitCommand { editing = false }
+            } else {
+                Text(entry.note.isEmpty ? "Add a note" : entry.note)
+                    .opacity(entry.note.isEmpty ? 0.6 : 1)
+                    .onTapGesture { editing = true }
+                    .help("Click to edit the note")
+            }
+        }
+        .foregroundStyle(Theme.inkSoft)
+        .frame(minWidth: 120, maxWidth: 260, alignment: .leading)
+    }
+
+    private func commit() {
+        store.setNote(entry.id, text)
+        editing = false
     }
 }
 
@@ -153,7 +168,7 @@ struct DayBookends: View {
                 Spacer()
                 Rectangle().fill(Theme.line).frame(height: 1).frame(maxWidth: 60).alignmentGuide(.firstTextBaseline) { _ in -6 }
                 Spacer()
-                bookend("Ended", w?.end, placeholder: w?.start != nil && day.isToday ? "In progress" : "–")
+                bookend(w?.end == nil && w?.start != nil && day.isToday ? "In progress" : "Ended", w?.end)
             }
             .contentShape(Rectangle())
             .onTapGesture { editing = true }
@@ -190,7 +205,7 @@ struct DayBookends: View {
     private func bookend(_ label: String, _ date: Date?, placeholder: String = "–") -> some View {
         VStack(alignment: label == "Started" ? .leading : .trailing, spacing: 2) {
             Text(date.map { Fmt.time($0) } ?? placeholder)
-                .font(.system(size: date == nil ? 17 : 26, weight: .regular).width(.condensed).monospacedDigit())
+                .font(.system(size: 26, weight: .regular).width(.condensed).monospacedDigit())
                 .foregroundStyle(date == nil ? Theme.inkSoft : Theme.molte)
             Text(label).font(.caption).foregroundStyle(Theme.inkSoft)
         }
