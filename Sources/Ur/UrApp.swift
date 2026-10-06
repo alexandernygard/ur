@@ -14,6 +14,7 @@ struct UrApp: App {
                 .frame(minWidth: 920, minHeight: 620)
         }
         .defaultSize(width: 1200, height: 800)
+        .windowResizability(.contentMinSize)
         .commands { UrCommands(store: store) }
 
         MenuBarExtra {

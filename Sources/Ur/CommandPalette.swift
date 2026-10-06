@@ -60,6 +60,7 @@ struct CommandPalette: View {
                         .padding(6)
                     }
                     .frame(maxHeight: 360)
+                    .fixedSize(horizontal: false, vertical: true)
                     .onChange(of: index) { proxy.scrollTo(index) }
                 }
 
@@ -117,7 +118,7 @@ struct CommandPalette: View {
     private func installKeys() {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             switch event.keyCode {
-            case 125: index += 1; return nil
+            case 125: index = min(index + 1, max(0, results().count - 1)); return nil
             case 126: index = max(0, index - 1); return nil
             case 53: close(); return nil
             default: return event

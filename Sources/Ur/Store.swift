@@ -247,9 +247,10 @@ final class Store {
         if prefs.autoStartDay {
             if workday(t)?.start == nil { startDay(at: t) } else if workday(t)?.end != nil { resumeDay() }
         }
-        // A plan in progress ends where the timer starts.
+        // A plan already under way ends where the timer starts; one that has barely begun
+        // stays a plan and is pushed back by the timer like any other.
         for i in data.entries.indices where data.entries[i].start < t && (data.entries[i].end ?? t) > t {
-            data.entries[i].end = t
+            if t.timeIntervalSince(data.entries[i].start) < 120 { data.entries[i].start = t } else { data.entries[i].end = t }
         }
         data.entries.append(Entry(projectID: projectID, start: t, end: nil, note: note))
         selectedDay = t.startOfDay
@@ -257,7 +258,7 @@ final class Store {
 
     /// A running timer owns the time it covers: plans it runs into are pushed back as it goes,
     /// and dropped once they have been fully overtaken. Prevents counting the same minutes twice.
-    private func yieldPlansToTimer(_ now: Date) {
+    func yieldPlansToTimer(_ now: Date) {
         guard let r = running else { return }
         let hit = data.entries.indices.filter { i in
             let x = data.entries[i]
@@ -369,6 +370,16 @@ final class Store {
         data.entries = out
     }
 
+    /// Time logged outside the recorded work day means the day was longer than recorded.
+    private func extendDay(_ start: Date, _ end: Date) {
+        guard end <= Date().addingTimeInterval(60) else { return }
+        let k = start.dayKey
+        guard var w = data.days[k] else { return }
+        if let s = w.start, start < s { w.start = start }
+        if let e = w.end, end > e, end.dayKey == k { w.end = end }
+        if w != data.days[k] { data.days[k] = w }
+    }
+
     func save(_ d: EntryDraft) {
         guard let pid = d.projectID else { return }
         let end: Date? = d.running ? nil : d.end
@@ -385,6 +396,7 @@ final class Store {
             data.entries.append(x)
             selectedEntryID = x.id
         }
+        extendDay(d.start, effectiveEnd)
     }
 
     func setTimes(_ id: UUID, start: Date, end: Date?) {
@@ -394,6 +406,7 @@ final class Store {
         guard let j = data.entries.firstIndex(where: { $0.id == id }) else { return }
         data.entries[j].start = start
         data.entries[j].end = end
+        extendDay(start, effectiveEnd)
     }
 
     func setProject(_ entryID: UUID, _ projectID: UUID) {
