@@ -17,6 +17,9 @@ enum Snapshot {
 
         var steps: [(String, () -> Void)] = Pane.allCases.map { pane in (pane.rawValue, { store.pane = pane }) }
         steps.insert(("today-past", { store.pane = .today; store.selectedDay = Date().startOfDay.adding(days: -1) }), at: 1)
+        steps.insert(("calendar-workdays", { store.span = .workdays; store.goToday() }), at: 2)
+        steps.insert(("calendar-week", { store.span = .week }), at: 3)
+        steps.insert(("calendar-day", { store.span = .day }), at: 4)
         steps.append(("palette", { store.pane = .today; store.goToday(); store.showPalette = true }))
         steps.append(("editor", { store.showPalette = false; store.newEntry() }))
 

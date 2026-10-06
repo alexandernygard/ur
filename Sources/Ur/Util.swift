@@ -13,6 +13,8 @@ let cal: Calendar = {
 extension Date {
     var startOfDay: Date { cal.startOfDay(for: self) }
     func adding(days: Int) -> Date { cal.date(byAdding: .day, value: days, to: self)! }
+    func adding(months: Int) -> Date { cal.date(byAdding: .month, value: months, to: self)! }
+    var startOfMonth: Date { cal.dateInterval(of: .month, for: self)!.start }
     var startOfWeek: Date { cal.dateInterval(of: .weekOfYear, for: self)!.start }
     var weekNumber: Int { cal.component(.weekOfYear, from: self) }
     var dayKey: String { Fmt.key.string(from: self) }

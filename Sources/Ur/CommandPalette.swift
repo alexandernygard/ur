@@ -83,9 +83,10 @@ struct CommandPalette: View {
             .shadow(color: .black.opacity(0.25), radius: 30, y: 12)
             .padding(.top, 70)
         }
+        .defaultFocus($focused, true)
         .onAppear {
-            focused = true
             installKeys()
+            focusField()
         }
         .onDisappear { removeKeys() }
         .onChange(of: query) { index = 0 }
@@ -123,6 +124,15 @@ struct CommandPalette: View {
             case 53: close(); return nil
             default: return event
             }
+        }
+    }
+
+    /// The overlay isn't in the window's responder chain on the first pass, so a single
+    /// `focused = true` in onAppear is ignored. Ask again once it's on screen.
+    private func focusField() {
+        focused = true
+        for delay in [0.0, 0.05, 0.15] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { focused = true }
         }
     }
 
@@ -274,6 +284,12 @@ struct CommandPalette: View {
         })
         for (i, p) in Pane.allCases.enumerated() {
             c.append(Item(icon: p.icon, title: "Go to \(p.title)", hint: "⌥⌘\(i + 1)") { store.pane = p })
+        }
+        for (i, span) in Span.allCases.enumerated() {
+            c.append(Item(icon: "calendar", title: "Show \(span.title)", hint: "⌃⌘\(i + 1)") {
+                store.span = span
+                store.pane = .today
+            })
         }
         c.append(Item(icon: "keyboard", title: "Keyboard shortcuts", hint: "⌘/") {
             DispatchQueue.main.async { store.showShortcuts = true }

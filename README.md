@@ -18,7 +18,7 @@ cd ur && ./install.sh
 
 ## How it works
 
-- **Start and end your day** with ⌘D. Both times are drawn in amber on the timeline, the week view and stats, and you can click them to adjust. Starting a timer also starts the day automatically (you can turn this off in Settings).
+- **Start and end your day** with ⌘D. Both times are drawn in amber on the calendar and in stats. Drag the amber line to change them, or right-click anywhere on a day to start or end it at that time. Starting a timer also starts the day automatically (you can turn this off in Settings).
 - **Track the present** with ⌘1–⌘9, the project chips, or the menu bar. Switching projects stops the previous timer.
 - **Fill in the past** by dragging on the timeline, clicking an unallocated gap, or pressing ⌘N. New time replaces whatever it overlaps.
 - **Plan the future** by adding entries later in the day. They appear dashed and don't count as tracked until the time has passed.
@@ -41,13 +41,14 @@ cd ur && ./install.sh
 | ⌘E | Edit selected or running entry |
 | ⌘⌫ | Delete selected entry |
 | ⌘T, ⌘[, ⌘] | Today, previous, next |
-| ⌥⌘1 – ⌥⌘4 | Day, Week, Stats, Projects |
+| ⌥⌘1 – ⌥⌘4 | Calendar, Timesheet, Stats, Projects |
+| ⌃⌘1 – ⌃⌘3 | Calendar shows one day, workdays, or the full week |
 | ⌘/ | Shortcut list |
 
 ## Views
 
-- **Day**: the running clock, the day's start and end, project chips, a 24-hour timeline, and totals with any unallocated gaps.
-- **Week**: seven mini timelines, plus a timesheet of hours per project per day and time at work.
+- **Calendar**: the running clock, the day's start and end, project chips, and an editable timeline. Switch between one day, the five workdays, or the full week; every column can be edited the same way, and blocks can be dragged from one day to another. Beside it are a month calendar (click a day or a week number to go there) and totals for what's on screen, with any unallocated gaps.
+- **Timesheet**: hours per project per day for the week, with group subtotals and time at work.
 - **Stats**: week, month or year view of tracked hours, days worked, average day length, average start and end times, and how much of the work day was allocated. Charts show hours per day by project, the span of each work day, project share, and time of day. You can export entries or work days as CSV.
 - **Projects**: rename, set colour, reorder (which sets the ⌘ numbers), archive or delete. Put projects in groups, such as a client, or leave them on their own. Each group shows the combined time of its projects, here and in the Day, Week and Stats breakdowns, where a group can be folded to show only its total.
 

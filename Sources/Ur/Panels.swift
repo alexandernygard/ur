@@ -169,12 +169,15 @@ struct ShortcutsSheet: View {
             ("⌘E", "Edit the selected or running entry"),
             ("⌘⌫", "Delete the selected entry"),
             ("Drag", "On the timeline: log a new block"),
-            ("Drag a block", "Move it; drag its edges to resize"),
+            ("Drag a block", "Move it, also to another day; drag its edges to resize"),
+            ("Drag the amber line", "Change when the day started or ended"),
+            ("Right-click", "Start or end the day at that time"),
         ]),
         ("Moving around", [
             ("⌘T", "Go to today"),
             ("⌘[  ⌘]", "Previous and next day or week"),
-            ("⌥⌘1 – ⌥⌘4", "Day, Week, Stats, Projects"),
+            ("⌥⌘1 – ⌥⌘4", "Calendar, Timesheet, Stats, Projects"),
+            ("⌃⌘1 – ⌃⌘3", "Calendar: day, workdays, full week"),
             ("⌘/", "This list"),
         ]),
         ("Command bar examples", [

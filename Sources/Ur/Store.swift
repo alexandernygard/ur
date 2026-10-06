@@ -6,18 +6,31 @@ enum Pane: String, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .today: "Day"
-        case .week: "Week"
+        case .today: "Calendar"
+        case .week: "Timesheet"
         case .stats: "Stats"
         case .projects: "Projects"
         }
     }
     var icon: String {
         switch self {
-        case .today: "sun.horizon"
-        case .week: "calendar"
+        case .today: "calendar"
+        case .week: "tablecells"
         case .stats: "chart.bar.xaxis"
         case .projects: "square.stack"
+        }
+    }
+}
+
+/// How many days the calendar shows side by side.
+enum Span: String, CaseIterable, Identifiable {
+    case day, workdays, week
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .day: "Day"
+        case .workdays: "Workdays"
+        case .week: "Full week"
         }
     }
 }
@@ -73,6 +86,9 @@ final class Store {
     // UI state
     var pane: Pane = .today
     var selectedDay = Date().startOfDay
+    var span: Span = Span(rawValue: UserDefaults.standard.string(forKey: "span") ?? "") ?? .day {
+        didSet { UserDefaults.standard.set(span.rawValue, forKey: "span") }
+    }
     var selectedEntryID: UUID?
     var editing: EntryDraft?
     var showPalette = false
@@ -569,11 +585,19 @@ final class Store {
 
     func goToday() { selectedDay = Date().startOfDay }
 
-    func step(_ dir: Int) {
-        switch pane {
-        case .week: selectedDay = selectedDay.adding(days: 7 * dir)
-        default: selectedDay = selectedDay.adding(days: dir)
+    /// The days the calendar shows: the selected day, or the week around it.
+    var visibleDays: [Date] {
+        let monday = selectedDay.startOfWeek
+        switch span {
+        case .day: return [selectedDay]
+        case .workdays: return (0..<5).map { monday.adding(days: $0) }
+        case .week: return (0..<7).map { monday.adding(days: $0) }
         }
+    }
+
+    func step(_ dir: Int) {
+        let byWeek = pane == .week || (pane == .today && span != .day)
+        selectedDay = selectedDay.adding(days: byWeek ? 7 * dir : dir)
     }
 
     // MARK: Stats

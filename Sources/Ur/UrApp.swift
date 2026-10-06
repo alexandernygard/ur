@@ -116,6 +116,11 @@ struct UrCommands: Commands {
                     .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: [.command, .option])
             }
             Divider()
+            ForEach(Array(Span.allCases.enumerated()), id: \.element) { i, span in
+                Button("Show \(span.title)") { store.span = span; store.pane = .today }
+                    .keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: [.command, .control])
+            }
+            Divider()
             Button("Today") { store.goToday(); if store.pane != .week { store.pane = .today } }
                 .keyboardShortcut("t")
             Button("Previous") { store.step(-1) }
