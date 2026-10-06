@@ -54,26 +54,35 @@ struct MenuBarPanel: View {
 
                 Divider()
 
-                VStack(spacing: 2) {
-                    ForEach(store.activeProjects) { p in
-                        let isRunning = store.running?.projectID == p.id
-                        Button { store.toggle(p.id) } label: {
-                            HStack {
-                                Image(systemName: isRunning ? "stop.fill" : "play.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(Theme.project(p.colorIndex))
-                                    .frame(width: 14)
-                                Text(p.name)
-                                Spacer()
-                                let t = store.tracked(on: ctx.date, project: p.id, now: ctx.date)
-                                if t >= 60 { Text(Fmt.hmm(t)).monospacedDigit().foregroundStyle(Theme.inkSoft) }
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(isRunning ? Theme.project(p.colorIndex).opacity(0.15) : .clear))
-                            .contentShape(Rectangle())
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(store.sections(store.activeProjects).filter { !$0.projects.isEmpty }, id: \.group?.id) { section in
+                        if let g = section.group {
+                            Text(g.name)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Theme.inkSoft)
+                                .padding(.horizontal, 8)
+                                .padding(.top, 6)
                         }
-                        .buttonStyle(.plain)
+                        ForEach(section.projects) { p in
+                            let isRunning = store.running?.projectID == p.id
+                            Button { store.toggle(p.id) } label: {
+                                HStack {
+                                    Image(systemName: isRunning ? "stop.fill" : "play.fill")
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(Theme.project(p.colorIndex))
+                                        .frame(width: 14)
+                                    Text(p.name)
+                                    Spacer()
+                                    let t = store.tracked(on: ctx.date, project: p.id, now: ctx.date)
+                                    if t >= 60 { Text(Fmt.hmm(t)).monospacedDigit().foregroundStyle(Theme.inkSoft) }
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(isRunning ? Theme.project(p.colorIndex).opacity(0.15) : .clear))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
 

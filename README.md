@@ -49,7 +49,7 @@ cd ur && ./install.sh
 - **Day**: the running clock, the day's start and end, project chips, a 24-hour timeline, and totals with any unallocated gaps.
 - **Week**: seven mini timelines, plus a timesheet of hours per project per day and time at work.
 - **Stats**: week, month or year view of tracked hours, days worked, average day length, average start and end times, and how much of the work day was allocated. Charts show hours per day by project, the span of each work day, project share, and time of day. You can export entries or work days as CSV.
-- **Projects**: rename, set colour and client, reorder (which sets the ⌘ numbers), archive or delete.
+- **Projects**: rename, set colour, reorder (which sets the ⌘ numbers), archive or delete. Put projects in groups, such as a client, or leave them on their own. Each group shows the combined time of its projects, here and in the Day, Week and Stats breakdowns, where a group can be folded to show only its total.
 
 ## Data
 

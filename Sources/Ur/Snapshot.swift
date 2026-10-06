@@ -21,7 +21,7 @@ enum Snapshot {
         steps.append(("editor", { store.showPalette = false; store.newEntry() }))
 
         func next(_ i: Int) {
-            guard i < steps.count else { NSApp.terminate(nil); return }
+            guard i < steps.count else { store.saveNow(); exit(0) }
             steps[i].1()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 let view: NSView = (i == steps.count - 1 ? NSApp.windows.last(where: { $0.isVisible && $0 != window && $0.className.contains("Sheet") })?.contentView : nil) ?? host

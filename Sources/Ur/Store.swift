@@ -32,6 +32,19 @@ struct EntryDraft: Identifiable {
     var running = false
 }
 
+struct ProjectTime: Identifiable {
+    var id: UUID
+    var time: TimeInterval
+}
+
+/// One top-level line in a breakdown: a group with its projects, or a project on its own.
+struct Tally: Identifiable {
+    var id: UUID
+    var group: ProjectGroup?
+    var projects: [ProjectTime]
+    var total: TimeInterval
+}
+
 struct DayStat: Identifiable {
     var day: Date
     var perProject: [UUID: TimeInterval]
@@ -74,6 +87,7 @@ final class Store {
     init() {
         Persistence.backup()
         data = Persistence.load() ?? .starter
+        normalizeProjectOrder()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self else { return }
             let now = Date()
@@ -431,11 +445,12 @@ final class Store {
     // MARK: Projects
 
     @discardableResult
-    func addProject(_ name: String, client: String = "") -> Project {
+    func addProject(_ name: String, group: UUID? = nil) -> Project {
         let used = Set(data.projects.map(\.colorIndex))
         let color = (0..<Theme.projectPalette.count).first { !used.contains($0) } ?? data.projects.count
-        let p = Project(name: name.trimmingCharacters(in: .whitespaces), colorIndex: color, client: client)
+        let p = Project(name: name.trimmingCharacters(in: .whitespaces), colorIndex: color, groupID: group)
         data.projects.append(p)
+        normalizeProjectOrder()
         return p
     }
 
@@ -443,6 +458,107 @@ final class Store {
         if running?.projectID == id { stop() }
         data.entries.removeAll { $0.projectID == id }
         data.projects.removeAll { $0.id == id }
+    }
+
+    // MARK: Groups
+
+    func group(_ id: UUID?) -> ProjectGroup? {
+        guard let id else { return nil }
+        return data.groups.first { $0.id == id }
+    }
+
+    func groupName(of projectID: UUID?) -> String? { group(project(projectID)?.groupID)?.name }
+
+    @discardableResult
+    func addGroup(_ name: String) -> ProjectGroup {
+        let g = ProjectGroup(name: name.trimmingCharacters(in: .whitespaces))
+        data.groups.append(g)
+        return g
+    }
+
+    /// Removes the group. Its projects stay, ungrouped.
+    func deleteGroup(_ id: UUID) {
+        for i in data.projects.indices where data.projects[i].groupID == id { data.projects[i].groupID = nil }
+        data.groups.removeAll { $0.id == id }
+        normalizeProjectOrder()
+    }
+
+    func setGroup(_ projectID: UUID, to groupID: UUID?) {
+        guard let i = data.projects.firstIndex(where: { $0.id == projectID }), data.projects[i].groupID != groupID else { return }
+        // Join the new group at the end.
+        var p = data.projects.remove(at: i)
+        p.groupID = groupID
+        data.projects.append(p)
+        normalizeProjectOrder()
+    }
+
+    func moveGroup(_ id: UUID, by offset: Int) {
+        guard let i = data.groups.firstIndex(where: { $0.id == id }) else { return }
+        let j = i + offset
+        guard data.groups.indices.contains(j) else { return }
+        data.groups.swapAt(i, j)
+        normalizeProjectOrder()
+    }
+
+    /// Reorders projects within one group (or among the ungrouped), with offsets local to that group.
+    func moveProjects(in groupID: UUID?, from: IndexSet, to: Int) {
+        var members = data.projects.filter { $0.groupID == groupID }
+        members.move(fromOffsets: from, toOffset: to)
+        var next = members.makeIterator()
+        var all = data.projects
+        for i in all.indices where all[i].groupID == groupID { all[i] = next.next()! }
+        data.projects = all
+    }
+
+    /// Projects are kept in display order: ungrouped first, then each group in turn.
+    /// This order also sets the ⌘1–⌘9 shortcuts.
+    func normalizeProjectOrder() {
+        let rank = Dictionary(uniqueKeysWithValues: data.groups.enumerated().map { ($0.element.id, $0.offset) })
+        let sorted = data.projects.enumerated().sorted { a, b in
+            let ra = a.element.groupID.flatMap { rank[$0] } ?? -1
+            let rb = b.element.groupID.flatMap { rank[$0] } ?? -1
+            return ra != rb ? ra < rb : a.offset < b.offset
+        }.map(\.element)
+        // Drop references to groups that no longer exist.
+        let fixed = sorted.map { p -> Project in
+            var p = p
+            if let g = p.groupID, rank[g] == nil { p.groupID = nil }
+            return p
+        }
+        if fixed != data.projects { data.projects = fixed }
+    }
+
+    /// Projects split into the ungrouped ones followed by each group, in display order.
+    func sections(_ projects: [Project]) -> [(group: ProjectGroup?, projects: [Project])] {
+        var out: [(group: ProjectGroup?, projects: [Project])] = [(nil, projects.filter { group($0.groupID) == nil })]
+        for g in data.groups { out.append((g, projects.filter { $0.groupID == g.id })) }
+        return out
+    }
+
+    /// Rolls per-project times up into groups. Ungrouped projects stand alone.
+    /// `byTotal` sorts largest first; otherwise the project order is kept.
+    func tally(_ per: [UUID: TimeInterval], byTotal: Bool = true) -> [Tally] {
+        let order = Dictionary(uniqueKeysWithValues: data.projects.enumerated().map { ($0.element.id, $0.offset) })
+        var out: [Tally] = []
+        var groupIndex: [UUID: Int] = [:]
+        let ids = per.keys.filter { (per[$0] ?? 0) > 0 }.sorted { (order[$0] ?? .max) < (order[$1] ?? .max) }
+        for id in ids {
+            let t = per[id] ?? 0
+            if let g = group(project(id)?.groupID) {
+                if let i = groupIndex[g.id] {
+                    out[i].projects.append(ProjectTime(id: id, time: t))
+                    out[i].total += t
+                } else {
+                    groupIndex[g.id] = out.count
+                    out.append(Tally(id: g.id, group: g, projects: [ProjectTime(id: id, time: t)], total: t))
+                }
+            } else {
+                out.append(Tally(id: id, group: nil, projects: [ProjectTime(id: id, time: t)], total: t))
+            }
+        }
+        guard byTotal else { return out }
+        return out.map { var x = $0; x.projects.sort { $0.time > $1.time }; return x }
+            .sorted { $0.total > $1.total }
     }
 
     func totalTime(_ projectID: UUID) -> TimeInterval {
@@ -481,14 +597,14 @@ final class Store {
     }
 
     func csvEntries(from: Date, to: Date) -> String {
-        var rows = ["date,start,end,hours,project,client,note"]
+        var rows = ["date,start,end,hours,project,group,note"]
         for x in entries(from: from, to: to) {
             let p = project(x.projectID)
             let end = x.effectiveEnd()
             rows.append([
                 x.start.dayKey, Fmt.time(x.start), Fmt.time(end),
                 String(format: "%.2f", end.timeIntervalSince(x.start) / 3600),
-                csv(p?.name ?? ""), csv(p?.client ?? ""), csv(x.note),
+                csv(p?.name ?? ""), csv(group(p?.groupID)?.name ?? ""), csv(x.note),
             ].joined(separator: ","))
         }
         return rows.joined(separator: "\n") + "\n"

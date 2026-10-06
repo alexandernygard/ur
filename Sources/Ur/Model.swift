@@ -1,11 +1,43 @@
 import Foundation
 
-struct Project: Identifiable, Codable, Hashable {
+/// A named group of projects, such as a client. Its time is the sum of its projects.
+struct ProjectGroup: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var name: String
+}
+
+struct Project: Identifiable, Hashable {
     var id = UUID()
     var name: String
     var colorIndex: Int
-    var client: String = ""
+    /// `nil` when the project stands on its own.
+    var groupID: UUID?
     var archived = false
+    /// The free-text client from before groups existed. Turned into a group on load.
+    var legacyClient: String?
+}
+
+extension Project: Codable {
+    enum CodingKeys: String, CodingKey { case id, name, colorIndex, groupID, archived, client }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        colorIndex = try c.decodeIfPresent(Int.self, forKey: .colorIndex) ?? 0
+        groupID = try c.decodeIfPresent(UUID.self, forKey: .groupID)
+        archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        legacyClient = try c.decodeIfPresent(String.self, forKey: .client)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(colorIndex, forKey: .colorIndex)
+        try c.encodeIfPresent(groupID, forKey: .groupID)
+        try c.encode(archived, forKey: .archived)
+    }
 }
 
 struct Entry: Identifiable, Codable, Hashable {
@@ -54,6 +86,7 @@ struct Preferences: Codable, Hashable {
 }
 
 struct AppData: Codable {
+    var groups: [ProjectGroup] = []
     var projects: [Project] = []
     var entries: [Entry] = []
     var days: [String: WorkDay] = [:]
@@ -63,10 +96,29 @@ struct AppData: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        groups = try c.decodeIfPresent([ProjectGroup].self, forKey: .groups) ?? []
         projects = try c.decodeIfPresent([Project].self, forKey: .projects) ?? []
         entries = try c.decodeIfPresent([Entry].self, forKey: .entries) ?? []
         days = try c.decodeIfPresent([String: WorkDay].self, forKey: .days) ?? [:]
         preferences = try c.decodeIfPresent(Preferences.self, forKey: .preferences) ?? Preferences()
+        migrateClients()
+    }
+
+    /// Projects that had a client get a group of that name.
+    private mutating func migrateClients() {
+        for i in projects.indices {
+            defer { projects[i].legacyClient = nil }
+            guard projects[i].groupID == nil,
+                  let client = projects[i].legacyClient?.trimmingCharacters(in: .whitespaces), !client.isEmpty
+            else { continue }
+            if let g = groups.first(where: { $0.name.lowercased() == client.lowercased() }) {
+                projects[i].groupID = g.id
+            } else {
+                let g = ProjectGroup(name: client)
+                groups.append(g)
+                projects[i].groupID = g.id
+            }
+        }
     }
 
     static var starter: AppData {

@@ -209,7 +209,7 @@ struct CommandPalette: View {
         }
 
         let ranked = store.activeProjects.enumerated()
-            .map { (i: $0.offset, p: $0.element, s: Fuzzy.score($0.element.name, projectQuery)) }
+            .map { (i: $0.offset, p: $0.element, s: score($0.element, projectQuery)) }
             .filter { $0.s > 0 }
             .sorted { $0.s != $1.s ? $0.s > $1.s : $0.i < $1.i }
 
@@ -223,7 +223,7 @@ struct CommandPalette: View {
                 let isRunning = store.running?.projectID == p.id
                 items.append(Item(icon: "play", color: color,
                                   title: isRunning && note.isEmpty ? "Stop \(p.name)" : "Start \(p.name)",
-                                  detail: noteSuffix, hint: r.i < 9 ? "⌘\(r.i + 1)" : "") {
+                                  detail: note.isEmpty ? store.group(p.groupID)?.name ?? "" : noteSuffix, hint: r.i < 9 ? "⌘\(r.i + 1)" : "") {
                     if isRunning && note.isEmpty { store.stop() } else { store.start(p.id, note: note) }
                 })
             case .range(let a, let b):
@@ -252,6 +252,13 @@ struct CommandPalette: View {
             items += commands().filter { raw.isEmpty || Fuzzy.score($0.title, raw) >= 40 }
         }
         return items
+    }
+
+    /// Matches the project name, or the group and project together ("northwind redesign").
+    private func score(_ p: Project, _ q: String) -> Int {
+        let own = Fuzzy.score(p.name, q)
+        guard let g = store.group(p.groupID), !q.isEmpty else { return own }
+        return max(own, Fuzzy.score("\(g.name) \(p.name)", q) - 5)
     }
 
     private func commands() -> [Item] {

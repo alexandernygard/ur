@@ -3,40 +3,73 @@ import SwiftUI
 struct ProjectsView: View {
     @Environment(Store.self) private var store
     @State private var newName = ""
-    @State private var newClient = ""
+    @State private var newGroup: UUID?
     @State private var confirmDelete: Project?
+    @State private var confirmDeleteGroup: ProjectGroup?
+    @State private var naming: GroupNaming?
+    @State private var groupName = ""
     @FocusState private var newFocused: Bool
 
+    /// The "New group" prompt. `project` joins the group once it's created.
+    struct GroupNaming { var project: UUID? }
+
     var body: some View {
-        @Bindable var store = store
+        let sections = store.sections(store.data.projects)
+        let hasGroups = !store.data.groups.isEmpty
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 TextField("New project", text: $newName)
                     .textFieldStyle(.roundedBorder)
                     .focused($newFocused)
                     .onSubmit(add)
-                TextField("Client (optional)", text: $newClient)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 200)
-                    .onSubmit(add)
+                if hasGroups {
+                    Picker("Group", selection: $newGroup) {
+                        Text("No group").tag(UUID?.none)
+                        Divider()
+                        ForEach(store.data.groups) { g in Text(g.name).tag(UUID?.some(g.id)) }
+                    }
+                    .labelsHidden()
+                    .frame(width: 170)
+                    .help("Group for the new project")
+                }
                 Button("Add project", action: add)
                     .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("New group…") { askForGroup() }
             }
             .padding(20)
 
-            Text("Drag to reorder. The first nine active projects get ⌘1–⌘9.")
+            Text(hasGroups
+                 ? "Drag to reorder within a group, and use the group menu on a row to move a project. The first nine active projects get ⌘1–⌘9."
+                 : "Drag to reorder. The first nine active projects get ⌘1–⌘9. Groups, such as a client, add up the time of the projects in them.")
                 .font(.caption)
                 .foregroundStyle(Theme.inkSoft)
                 .padding(.horizontal, 20)
                 .padding(.bottom, 8)
 
             List {
-                ForEach($store.data.projects) { $p in
-                    ProjectRow(project: $p, shortcut: shortcut(for: p), total: store.totalTime(p.id)) {
-                        confirmDelete = p
+                ForEach(sections, id: \.group?.id) { section in
+                    if let g = section.group {
+                        Section {
+                            rows(section.projects, group: g.id)
+                            if section.projects.isEmpty {
+                                Text("No projects yet. Pick \(g.name) in a project's group menu, or choose it next to New project.")
+                                    .font(.callout)
+                                    .foregroundStyle(Theme.inkSoft)
+                                    .padding(.vertical, 4)
+                            }
+                        } header: {
+                            GroupHeader(group: g, projects: section.projects,
+                                        onAdd: { newGroup = g.id; newFocused = true },
+                                        onDelete: { confirmDeleteGroup = g })
+                        }
+                    } else if !section.projects.isEmpty || !hasGroups {
+                        Section {
+                            rows(section.projects, group: nil)
+                        } header: {
+                            if hasGroups { Text("Not in a group").font(.callout.weight(.semibold)).foregroundStyle(Theme.inkSoft) }
+                        }
                     }
                 }
-                .onMove { store.data.projects.move(fromOffsets: $0, toOffset: $1) }
             }
             .listStyle(.inset(alternatesRowBackgrounds: false))
             .scrollContentBackground(.hidden)
@@ -45,6 +78,16 @@ struct ProjectsView: View {
         .navigationSubtitle("\(store.activeProjects.count) active")
         .onReceive(NotificationCenter.default.publisher(for: .focusNewProject)) { _ in
             DispatchQueue.main.async { newFocused = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .newGroup)) { note in
+            askForGroup(for: note.object as? UUID)
+        }
+        .alert("New group", isPresented: Binding(get: { naming != nil }, set: { if !$0 { naming = nil } })) {
+            TextField("Name", text: $groupName)
+            Button("Create group") { createGroup() }
+            Button("Cancel", role: .cancel) { naming = nil }
+        } message: {
+            Text("For example a client. The group shows the combined time of its projects.")
         }
         .alert("Delete “\(confirmDelete?.name ?? "")”?", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } })) {
             Button("Delete project and its time", role: .destructive) {
@@ -55,6 +98,37 @@ struct ProjectsView: View {
         } message: {
             Text("This removes \(Fmt.dur(store.totalTime(confirmDelete?.id ?? UUID()))) of tracked time. Archive the project instead to keep its history.")
         }
+        .alert("Delete the group “\(confirmDeleteGroup?.name ?? "")”?", isPresented: Binding(get: { confirmDeleteGroup != nil }, set: { if !$0 { confirmDeleteGroup = nil } })) {
+            Button("Delete group", role: .destructive) {
+                if let g = confirmDeleteGroup {
+                    if newGroup == g.id { newGroup = nil }
+                    store.deleteGroup(g.id)
+                }
+                confirmDeleteGroup = nil
+            }
+            Button("Cancel", role: .cancel) { confirmDeleteGroup = nil }
+        } message: {
+            Text("Its projects and their time are kept, without a group.")
+        }
+    }
+
+    @ViewBuilder
+    private func rows(_ projects: [Project], group: UUID?) -> some View {
+        ForEach(projects) { p in
+            ProjectRow(project: binding(p.id), shortcut: shortcut(for: p), total: store.totalTime(p.id)) {
+                confirmDelete = p
+            }
+        }
+        .onMove { store.moveProjects(in: group, from: $0, to: $1) }
+    }
+
+    private func binding(_ id: UUID) -> Binding<Project> {
+        Binding(
+            get: { store.project(id) ?? Project(id: id, name: "", colorIndex: 0) },
+            set: { new in
+                if let i = store.data.projects.firstIndex(where: { $0.id == id }) { store.data.projects[i] = new }
+            }
+        )
     }
 
     private func shortcut(for p: Project) -> String? {
@@ -65,14 +139,85 @@ struct ProjectsView: View {
     private func add() {
         let name = newName.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
-        store.addProject(name, client: newClient.trimmingCharacters(in: .whitespaces))
+        store.addProject(name, group: newGroup)
         newName = ""
-        newClient = ""
         newFocused = true
+    }
+
+    private func askForGroup(for project: UUID? = nil) {
+        groupName = ""
+        naming = GroupNaming(project: project)
+    }
+
+    private func createGroup() {
+        let name = groupName.trimmingCharacters(in: .whitespaces)
+        let project = naming?.project
+        naming = nil
+        guard !name.isEmpty else { return }
+        let g = store.data.groups.first { $0.name.lowercased() == name.lowercased() } ?? store.addGroup(name)
+        if let project { store.setGroup(project, to: g.id) } else { newGroup = g.id }
+    }
+}
+
+/// A group's name (editable), its combined time and its actions.
+struct GroupHeader: View {
+    @Environment(Store.self) private var store
+    let group: ProjectGroup
+    let projects: [Project]
+    let onAdd: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        let i = store.data.groups.firstIndex { $0.id == group.id } ?? 0
+        HStack(spacing: 12) {
+            Image(systemName: "folder")
+                .foregroundStyle(Theme.inkSoft)
+            TextField("Group name", text: Binding(
+                get: { group.name },
+                set: { new in
+                    if let i = store.data.groups.firstIndex(where: { $0.id == group.id }) { store.data.groups[i].name = new }
+                }
+            ))
+            .textFieldStyle(.plain)
+            .font(.body.weight(.semibold))
+            .foregroundStyle(Theme.ink)
+            .frame(minWidth: 160)
+            Text("\(projects.count) \(projects.count == 1 ? "project" : "projects")")
+                .font(.callout)
+                .foregroundStyle(Theme.inkSoft)
+            Spacer()
+            Text(Fmt.hmm(projects.reduce(0) { $0 + store.totalTime($1.id) }))
+                .font(.body.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(Theme.ink)
+                .frame(width: 70, alignment: .trailing)
+                .help("Total time in \(group.name)")
+            // Line the total up with the project totals below.
+            Color.clear.frame(width: 34, height: 1)
+            Menu {
+                Button("Add a project to \(group.name)", action: onAdd)
+                Divider()
+                Button("Move group up") { store.moveGroup(group.id, by: -1) }.disabled(i == 0)
+                Button("Move group down") { store.moveGroup(group.id, by: 1) }.disabled(i == store.data.groups.count - 1)
+                Divider()
+                Button("Delete group…", role: .destructive, action: onDelete)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .frame(width: 60)
+            .help("Group actions")
+            Color.clear.frame(width: 16, height: 1)
+        }
+        .padding(.top, 14)
+        .padding(.bottom, 4)
     }
 }
 
 struct ProjectRow: View {
+    @Environment(Store.self) private var store
     @Binding var project: Project
     let shortcut: String?
     let total: TimeInterval
@@ -100,10 +245,24 @@ struct ProjectRow: View {
                 .textFieldStyle(.plain)
                 .font(.body.weight(.medium))
                 .frame(minWidth: 160)
-            TextField("Client", text: $project.client)
-                .textFieldStyle(.plain)
-                .foregroundStyle(Theme.inkSoft)
-                .frame(width: 160)
+            Menu {
+                Picker("Group", selection: Binding(get: { project.groupID }, set: { store.setGroup(project.id, to: $0) })) {
+                    Text("No group").tag(UUID?.none)
+                    ForEach(store.data.groups) { g in Text(g.name).tag(UUID?.some(g.id)) }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                Divider()
+                Button("New group…") {
+                    NotificationCenter.default.post(name: .newGroup, object: project.id)
+                }
+            } label: {
+                Text(store.group(project.groupID)?.name ?? "No group")
+            }
+            .menuStyle(.borderlessButton)
+            .foregroundStyle(Theme.inkSoft)
+            .frame(width: 150, alignment: .leading)
+            .help("Group")
             Spacer()
             Text(Fmt.hmm(total))
                 .monospacedDigit()

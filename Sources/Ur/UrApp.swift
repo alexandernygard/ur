@@ -133,4 +133,5 @@ struct UrCommands: Commands {
 
 extension Notification.Name {
     static let focusNewProject = Notification.Name("ur.focusNewProject")
+    static let newGroup = Notification.Name("ur.newGroup")
 }

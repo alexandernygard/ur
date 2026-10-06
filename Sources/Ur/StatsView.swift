@@ -49,7 +49,7 @@ struct StatsView: View {
                     spanChart(days)
                 }
                 HStack(alignment: .top, spacing: 32) {
-                    section("By project") { ProjectTable(days: days, ids: projectIDs) }
+                    section("By project") { ProjectTable(days: days) }
                         .frame(maxWidth: .infinity)
                     section("Time of day", note: "When tracked time happens, summed over the period.") {
                         hourOfDayChart(i, now: now)
@@ -402,41 +402,16 @@ struct Figures: View {
 struct ProjectTable: View {
     @Environment(Store.self) private var store
     let days: [DayStat]
-    let ids: [UUID]
 
     var body: some View {
-        let totals = ids.map { id in (id, days.reduce(0) { $0 + ($1.perProject[id] ?? 0) }) }
-        let sum = max(1, totals.reduce(0) { $0 + $1.1 })
-        VStack(spacing: 10) {
-            if totals.isEmpty {
-                Text("No projects tracked in this period.").foregroundStyle(Theme.inkSoft)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            ForEach(totals, id: \.0) { id, t in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Dot(color: store.color(id))
-                        Text(store.name(id)).lineLimit(1)
-                        if let c = store.project(id)?.client, !c.isEmpty {
-                            Text(c).foregroundStyle(Theme.inkSoft).lineLimit(1)
-                        }
-                        Spacer()
-                        Text(Fmt.hmm(t)).monospacedDigit()
-                        Text("\(Int((t / sum * 100).rounded()))%")
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.inkSoft)
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                    .font(.callout)
-                    GeometryReader { g in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Theme.line.opacity(0.6))
-                            Capsule().fill(store.color(id)).frame(width: max(3, g.size.width * t / sum))
-                        }
-                    }
-                    .frame(height: 4)
-                }
-            }
+        let per = days.reduce(into: [UUID: TimeInterval]()) { acc, d in
+            for (k, v) in d.perProject { acc[k, default: 0] += v }
+        }
+        if per.isEmpty {
+            Text("No projects tracked in this period.").foregroundStyle(Theme.inkSoft)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Breakdown(tallies: store.tally(per), showShare: true)
         }
     }
 }

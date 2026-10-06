@@ -336,11 +336,14 @@ struct DaySummary: View {
         TimelineView(.periodic(from: .now, by: 15)) { ctx in
             let now = ctx.date
             let entries = store.entries(on: day, now: now)
-            let ids = Array(Set(entries.map(\.projectID)))
-            let rows = ids.map { (id: $0, t: store.tracked(on: day, project: $0, now: now)) }
-                .filter { $0.t >= 60 }
-                .sorted { $0.t > $1.t }
-            let total = rows.reduce(0) { $0 + $1.t }
+            var per: [UUID: TimeInterval] = [:]
+            let _ = {
+                for id in Set(entries.map(\.projectID)) {
+                    let t = store.tracked(on: day, project: id, now: now)
+                    if t >= 60 { per[id] = t }
+                }
+            }()
+            let total = per.values.reduce(0, +)
             let gaps = store.gaps(day, now: now)
             let planned = store.planned(on: day, now: now)
 
@@ -348,27 +351,12 @@ struct DaySummary: View {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("By project").font(.headline)
-                        if rows.isEmpty {
+                        if per.isEmpty {
                             Text("No time yet. Start a timer, or drag on the timeline to log time after the fact.")
                                 .font(.callout)
                                 .foregroundStyle(Theme.inkSoft)
                         }
-                        ForEach(rows, id: \.id) { row in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Dot(color: store.color(row.id))
-                                    Text(store.name(row.id)).lineLimit(1)
-                                    Spacer()
-                                    Text(Fmt.dur(row.t)).monospacedDigit().foregroundStyle(Theme.inkSoft)
-                                }
-                                .font(.callout)
-                                GeometryReader { g in
-                                    Capsule().fill(store.color(row.id))
-                                        .frame(width: max(3, g.size.width * row.t / max(total, 1)))
-                                }
-                                .frame(height: 3)
-                            }
-                        }
+                        Breakdown(tallies: store.tally(per), barHeight: 3)
                     }
 
                     Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {

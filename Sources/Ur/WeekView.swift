@@ -127,9 +127,13 @@ struct Timesheet: View {
     @Environment(Store.self) private var store
     let days: [Date]
     let stats: [DayStat]
+    @State private var collapsed: Set<UUID> = []
 
     var body: some View {
-        let ids = store.data.projects.map(\.id).filter { id in stats.contains { ($0.perProject[id] ?? 0) > 0 } }
+        let week = stats.reduce(into: [UUID: TimeInterval]()) { acc, d in
+            for (k, v) in d.perProject { acc[k, default: 0] += v }
+        }
+        let tallies = store.tally(week, byTotal: false)
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Timesheet").font(.headline)
@@ -149,7 +153,7 @@ struct Timesheet: View {
 
                 Divider().gridCellUnsizedAxes(.horizontal)
 
-                if ids.isEmpty {
+                if tallies.isEmpty {
                     GridRow {
                         Text("No time tracked this week.").foregroundStyle(Theme.inkSoft).gridCellColumns(9)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -157,20 +161,40 @@ struct Timesheet: View {
                     .padding(.vertical, 10)
                 }
 
-                ForEach(ids, id: \.self) { id in
-                    GridRow {
-                        HStack(spacing: 8) {
-                            Dot(color: store.color(id))
-                            Text(store.name(id)).lineLimit(1)
+                ForEach(tallies) { t in
+                    if let g = t.group {
+                        let open = !collapsed.contains(g.id)
+                        let ids = t.projects.map(\.id)
+                        GridRow {
+                            Button {
+                                if open { collapsed.insert(g.id) } else { collapsed.remove(g.id) }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(Theme.inkSoft)
+                                        .rotationEffect(.degrees(open ? 90 : 0))
+                                        .frame(width: 10)
+                                    Text(g.name).fontWeight(.semibold).lineLimit(1)
+                                }
+                                .frame(minWidth: 160, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(open ? "Hide the projects in \(g.name)" : "Show the projects in \(g.name)")
+                            ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
+                                cell(ids.reduce(0) { $0 + (s.perProject[$1] ?? 0) }, bold: true)
+                            }
+                            cell(t.total, bold: true).frame(width: 76, alignment: .trailing)
                         }
-                        .frame(minWidth: 160, alignment: .leading)
-                        ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
-                            cell(s.perProject[id] ?? 0)
+                        .padding(.vertical, 6)
+                        Divider().opacity(0.5).gridCellUnsizedAxes(.horizontal)
+                        if open {
+                            ForEach(t.projects) { p in projectRow(p.id, indent: true) }
                         }
-                        cell(stats.reduce(0) { $0 + ($1.perProject[id] ?? 0) }, bold: true).frame(width: 76, alignment: .trailing)
+                    } else {
+                        projectRow(t.id, indent: false)
                     }
-                    .padding(.vertical, 6)
-                    Divider().opacity(0.5).gridCellUnsizedAxes(.horizontal)
                 }
 
                 GridRow {
@@ -193,6 +217,24 @@ struct Timesheet: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Theme.surface))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.line))
         }
+    }
+
+    @ViewBuilder
+    private func projectRow(_ id: UUID, indent: Bool) -> some View {
+        GridRow {
+            HStack(spacing: 8) {
+                Dot(color: store.color(id))
+                Text(store.name(id)).lineLimit(1)
+            }
+            .padding(.leading, indent ? 16 : 0)
+            .frame(minWidth: 160, alignment: .leading)
+            ForEach(Array(stats.enumerated()), id: \.offset) { _, s in
+                cell(s.perProject[id] ?? 0)
+            }
+            cell(stats.reduce(0) { $0 + ($1.perProject[id] ?? 0) }, bold: !indent).frame(width: 76, alignment: .trailing)
+        }
+        .padding(.vertical, 6)
+        Divider().opacity(0.5).gridCellUnsizedAxes(.horizontal)
     }
 
     private func cell(_ t: TimeInterval, bold: Bool = false) -> some View {
