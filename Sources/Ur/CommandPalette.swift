@@ -251,6 +251,16 @@ struct CommandPalette: View {
             }
         }
 
+        if case .now = parsed.when, !projectQuery.isEmpty {
+            for p in store.data.projects where p.archived && score(p, projectQuery) >= 60 {
+                items.append(Item(icon: "archivebox", color: Theme.project(p.colorIndex), title: "Restore \(p.name)",
+                                  detail: "Archived; brings it back and starts it") {
+                    store.setArchived(p.id, false)
+                    store.start(p.id, note: note)
+                })
+            }
+        }
+
         let name = parsed.project
         if !name.isEmpty && !store.data.projects.contains(where: { $0.name.lowercased() == name.lowercased() }) {
             items.append(Item(icon: "plus.square", title: "Create project “\(name)”", detail: "and start it") {

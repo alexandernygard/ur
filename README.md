@@ -50,7 +50,7 @@ cd ur && ./install.sh
 - **Calendar**: the running clock, the day's start and end, project chips, and an editable timeline. Switch between one day, the five workdays, or the full week; every column can be edited the same way, and blocks can be dragged from one day to another. Beside it are a month calendar (click a day or a week number to go there) and totals for what's on screen, with any unallocated gaps.
 - **Timesheet**: hours per project per day for the week, with group subtotals and time at work.
 - **Stats**: week, month or year view of tracked hours, days worked, average day length, average start and end times, and how much of the work day was allocated. Charts show hours per day by project, the span of each work day, project share, and time of day. You can export entries or work days as CSV.
-- **Projects**: rename, set colour, reorder (which sets the ⌘ numbers), archive or delete. Put projects in groups, such as a client, or leave them on their own. Each group shows the combined time of its projects, here and in the Day, Week and Stats breakdowns, where a group can be folded to show only its total.
+- **Projects**: rename, set colour, reorder (which sets the ⌘ numbers), archive or delete. Archived projects leave the chips, shortcuts and command bar but keep their time; they sit in a folded Archived list where you can restore them. You can also archive from a project chip's right-click menu. Put projects in groups, such as a client, or leave them on their own. Each group shows the combined time of its projects, here and in the Day, Week and Stats breakdowns, where a group can be folded to show only its total.
 
 ## Data
 

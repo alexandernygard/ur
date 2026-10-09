@@ -354,6 +354,12 @@ struct ProjectChip: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .help(isRunning ? "Stop \(project.name)" : "Start \(project.name)")
+        .contextMenu {
+            Button(isRunning ? "Stop \(project.name)" : "Start \(project.name)") { store.toggle(project.id) }
+            Button("Archive \(project.name)") { store.setArchived(project.id, true) }
+            Divider()
+            Button("Edit Projects…") { store.pane = .projects }
+        }
     }
 }
 

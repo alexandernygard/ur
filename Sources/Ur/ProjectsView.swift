@@ -8,13 +8,15 @@ struct ProjectsView: View {
     @State private var confirmDeleteGroup: ProjectGroup?
     @State private var naming: GroupNaming?
     @State private var groupName = ""
+    @State private var showArchived = false
     @FocusState private var newFocused: Bool
 
     /// The "New group" prompt. `project` joins the group once it's created.
     struct GroupNaming { var project: UUID? }
 
     var body: some View {
-        let sections = store.sections(store.data.projects)
+        let sections = store.sections(store.activeProjects)
+        let archived = store.data.projects.filter(\.archived)
         let hasGroups = !store.data.groups.isEmpty
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
@@ -70,12 +72,43 @@ struct ProjectsView: View {
                         }
                     }
                 }
+                if !archived.isEmpty {
+                    Section {
+                        if showArchived {
+                            ForEach(archived) { p in
+                                ProjectRow(project: binding(p.id), shortcut: nil, total: store.totalTime(p.id)) {
+                                    confirmDelete = p
+                                }
+                            }
+                        }
+                    } header: {
+                        Button {
+                            showArchived.toggle()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .rotationEffect(.degrees(showArchived ? 90 : 0))
+                                    .frame(width: 12)
+                                Image(systemName: "archivebox")
+                                Text("Archived").fontWeight(.semibold)
+                                Text("\(archived.count)").foregroundStyle(Theme.inkSoft)
+                            }
+                            .font(.callout)
+                            .foregroundStyle(Theme.ink)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 14)
+                        .help(showArchived ? "Hide archived projects" : "Show archived projects")
+                    }
+                }
             }
             .listStyle(.inset(alternatesRowBackgrounds: false))
             .scrollContentBackground(.hidden)
         }
         .navigationTitle("Projects")
-        .navigationSubtitle("\(store.activeProjects.count) active")
+        .navigationSubtitle(archived.isEmpty ? "\(store.activeProjects.count) active" : "\(store.activeProjects.count) active, \(archived.count) archived")
         .onReceive(NotificationCenter.default.publisher(for: .focusNewProject)) { _ in
             DispatchQueue.main.async { newFocused = true }
         }
@@ -186,7 +219,8 @@ struct GroupHeader: View {
                 .font(.callout)
                 .foregroundStyle(Theme.inkSoft)
             Spacer()
-            Text(Fmt.hmm(projects.reduce(0) { $0 + store.totalTime($1.id) }))
+            // Archived projects still count towards the group's time.
+            Text(Fmt.hmm(store.data.projects.filter { $0.groupID == group.id }.reduce(0) { $0 + store.totalTime($1.id) }))
                 .font(.body.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(Theme.ink)
@@ -272,14 +306,24 @@ struct ProjectRow: View {
                 if let shortcut { KeyHint(text: shortcut) } else { Color.clear }
             }
             .frame(width: 34)
-            Button(project.archived ? "Restore" : "Archive") { project.archived.toggle() }
-                .buttonStyle(.borderless)
-                .frame(width: 60)
+            Button {
+                store.setArchived(project.id, !project.archived)
+            } label: {
+                Image(systemName: project.archived ? "arrow.uturn.backward.circle" : "archivebox")
+            }
+            .buttonStyle(.borderless)
+            .frame(width: 28)
+            .help(project.archived ? "Restore \(project.name)" : "Archive \(project.name): hide it from tracking but keep its time")
             Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
                 .help("Delete project")
         }
         .padding(.vertical, 4)
-        .opacity(project.archived ? 0.5 : 1)
+        .opacity(project.archived ? 0.6 : 1)
+        .contextMenu {
+            Button(project.archived ? "Restore" : "Archive") { store.setArchived(project.id, !project.archived) }
+            Divider()
+            Button("Delete…", role: .destructive, action: onDelete)
+        }
     }
 }

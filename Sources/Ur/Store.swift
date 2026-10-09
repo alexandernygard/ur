@@ -470,6 +470,13 @@ final class Store {
         return p
     }
 
+    /// Archived projects keep their history but leave the chips, shortcuts and menus.
+    func setArchived(_ id: UUID, _ archived: Bool) {
+        guard let i = data.projects.firstIndex(where: { $0.id == id }) else { return }
+        if archived, running?.projectID == id { stop() }
+        data.projects[i].archived = archived
+    }
+
     func deleteProject(_ id: UUID) {
         if running?.projectID == id { stop() }
         data.entries.removeAll { $0.projectID == id }
@@ -518,11 +525,13 @@ final class Store {
 
     /// Reorders projects within one group (or among the ungrouped), with offsets local to that group.
     func moveProjects(in groupID: UUID?, from: IndexSet, to: Int) {
-        var members = data.projects.filter { $0.groupID == groupID }
+        // Indices are into the visible list, which leaves out archived projects.
+        let isMember = { (p: Project) in p.groupID == groupID && !p.archived }
+        var members = data.projects.filter(isMember)
         members.move(fromOffsets: from, toOffset: to)
         var next = members.makeIterator()
         var all = data.projects
-        for i in all.indices where all[i].groupID == groupID { all[i] = next.next()! }
+        for i in all.indices where isMember(all[i]) { all[i] = next.next()! }
         data.projects = all
     }
 

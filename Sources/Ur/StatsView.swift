@@ -234,12 +234,13 @@ struct StatsView: View {
         if spans.isEmpty {
             empty("No work days recorded. Press ⌘D to start your day.")
         } else {
-            let lo = max(0, floor(spans.map(\.start).min()! - 1))
-            let hi = min(24, ceil(spans.map(\.end).max()! + 1))
             let starts = days.compactMap { $0.start?.hoursIntoDay }
             let ends = days.compactMap { $0.end?.hoursIntoDay }
             let avgStart = starts.reduce(0, +) / Double(max(1, starts.count))
             let avgEnd: Double? = ends.isEmpty ? nil : ends.reduce(0, +) / Double(ends.count)
+            // The averages can include days without a bar (started but never ended), so keep them in range too.
+            let lo = max(0, floor(min(spans.map(\.start).min()!, avgStart, avgEnd ?? 24) - 1))
+            let hi = min(24, ceil(max(spans.map(\.end).max()!, avgStart, avgEnd ?? 0) + 1))
             let unit: Calendar.Component = .day
             let fullRange = interval
             Chart {
@@ -269,6 +270,7 @@ struct StatsView: View {
             // Negated so the morning sits at the top, like a timetable.
             .chartYScale(domain: -hi ... -lo)
             .chartXScale(domain: fullRange.start...fullRange.end)
+            .chartPlotStyle { $0.clipped() }
             .chartYAxis {
                 AxisMarks(values: .stride(by: 2)) { v in
                     AxisGridLine().foregroundStyle(Theme.line)
