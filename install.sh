@@ -8,6 +8,12 @@ if ! command -v swift >/dev/null 2>&1; then
     exit 1
 fi
 
+if command -v brew >/dev/null 2>&1 && brew list --cask ur >/dev/null 2>&1; then
+    echo "Ur is installed with Homebrew. Update it with: brew upgrade --cask ur"
+    echo "To run your local changes next to it, use: ./scripts/dev.sh"
+    exit 1
+fi
+
 ./scripts/build-app.sh
 
 DEST="/Applications"

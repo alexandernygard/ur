@@ -8,7 +8,7 @@ struct UrApp: App {
     @State private var store = Store.shared
 
     var body: some Scene {
-        Window("Ur", id: "main") {
+        Window(Build.name, id: "main") {
             ContentView()
                 .environment(store)
                 .frame(minWidth: 920, minHeight: 620)
@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// ⌃⌥Space from anywhere opens Ur with the command bar ready.
+/// ⌃⌥Space from anywhere opens Ur with the command bar ready (⌃⌥⇧Space in Ur Dev).
 enum GlobalHotKey {
     private static var action: (() -> Void)?
     private static var ref: EventHotKeyRef?
@@ -66,7 +66,8 @@ enum GlobalHotKey {
             return noErr
         }, 1, &spec, nil, nil)
         let id = EventHotKeyID(signature: OSType(0x5552_4B59), id: 1)
-        RegisterEventHotKey(UInt32(kVK_Space), UInt32(controlKey | optionKey), id, GetApplicationEventTarget(), 0, &ref)
+        let modifiers = controlKey | optionKey | (Build.isDev ? shiftKey : 0)
+        RegisterEventHotKey(UInt32(kVK_Space), UInt32(modifiers), id, GetApplicationEventTarget(), 0, &ref)
     }
 }
 

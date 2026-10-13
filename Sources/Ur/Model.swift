@@ -131,13 +131,20 @@ struct AppData: Codable {
     }
 }
 
+/// Development builds (`scripts/dev.sh`, or `swift run`) keep their own data and shortcut,
+/// so they can run next to the installed app without touching its data.
+enum Build {
+    static let isDev = Bundle.main.bundleIdentifier != "no.nygard.ur"
+    static let name = isDev ? "Ur Dev" : "Ur"
+}
+
 enum Persistence {
     static var directory: URL {
         if let custom = ProcessInfo.processInfo.environment["UR_DATA_DIR"] {
             return URL(fileURLWithPath: custom, isDirectory: true)
         }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Ur", isDirectory: true)
+            .appendingPathComponent(Build.name, isDirectory: true)
     }
     static var file: URL { directory.appendingPathComponent("ur.json") }
 

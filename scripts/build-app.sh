@@ -5,7 +5,14 @@ cd "$(dirname "$0")/.."
 
 VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null | sed 's/^v//' || echo 1.0)}"
 VERSION="${VERSION#v}"
-APP="build/Ur.app"
+# DEV=1 builds "Ur Dev", which has its own bundle ID and data folder so it can run
+# next to the installed Ur.
+if [ "${DEV:-0}" = "1" ]; then
+    NAME="Ur Dev"; BUNDLE_ID="no.nygard.ur.dev"
+else
+    NAME="Ur"; BUNDLE_ID="no.nygard.ur"
+fi
+APP="build/$NAME.app"
 
 if [ "${UNIVERSAL:-0}" = "1" ]; then
     # One binary for Apple Silicon and Intel. Built per architecture and merged,
@@ -35,9 +42,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Ur</string>
-    <key>CFBundleDisplayName</key><string>Ur</string>
-    <key>CFBundleIdentifier</key><string>no.nygard.ur</string>
+    <key>CFBundleName</key><string>${NAME}</string>
+    <key>CFBundleDisplayName</key><string>${NAME}</string>
+    <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
     <key>CFBundleExecutable</key><string>Ur</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>

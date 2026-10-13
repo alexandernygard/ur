@@ -73,10 +73,14 @@ Everything is stored locally in `~/Library/Application Support/Ur/ur.json`, with
 ## Development
 
 ```sh
+./scripts/dev.sh            # build and open "Ur Dev" from your working copy
+./scripts/dev.sh --copy-data   # same, starting from a copy of Ur's data
 swift build                 # debug build
 ./scripts/build-app.sh      # bundle build/Ur.app
 swift scripts/make-icon.swift Resources/AppIcon.icns   # regenerate the icon
 ```
+
+Ur Dev is a separate app (bundle ID `no.nygard.ur.dev`) that runs next to the installed Ur. It's installed in `~/Applications`, keeps its data in `~/Library/Application Support/Ur Dev`, shows DEV in the menu bar, and opens its command bar with ⌃⌥⇧Space. `swift run` also uses the Ur Dev data folder.
 
 To publish a new version, push a tag: `git tag v1.2.0 && git push origin v1.2.0`. The Release workflow builds a universal app, attaches `Ur.zip` to a GitHub release and updates the Homebrew cask. `UNIVERSAL=1 ./scripts/build-app.sh` makes the same universal build locally.
 

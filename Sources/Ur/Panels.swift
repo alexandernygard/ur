@@ -9,6 +9,7 @@ struct MenuBarLabel: View {
 
     var body: some View {
         let _ = store.tick
+        if Build.isDev { Text("DEV") }
         if let r = store.running {
             Image(systemName: "record.circle")
             Text(Fmt.hmm(Date().timeIntervalSince(r.start)))
@@ -89,12 +90,12 @@ struct MenuBarPanel: View {
                 Divider()
 
                 HStack {
-                    Button("Open Ur") {
+                    Button("Open \(Build.name)") {
                         NSApp.activate(ignoringOtherApps: true)
                         openWindow(id: "main")
                     }
                     Spacer()
-                    Text("⌃⌥Space").font(.caption).foregroundStyle(Theme.inkSoft)
+                    Text(Build.isDev ? "⌃⌥⇧Space" : "⌃⌥Space").font(.caption).foregroundStyle(Theme.inkSoft)
                     Spacer()
                     Button("Quit") { NSApp.terminate(nil) }
                 }
@@ -138,7 +139,7 @@ struct SettingsView: View {
                             launchAtLogin = SMAppService.mainApp.status == .enabled
                         }
                     }
-                LabeledContent("Global shortcut", value: "⌃⌥Space opens the command bar")
+                LabeledContent("Global shortcut", value: "\(Build.isDev ? "⌃⌥⇧Space" : "⌃⌥Space") opens the command bar")
                 LabeledContent("Data") {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([Persistence.file]) }
                 }
