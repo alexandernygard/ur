@@ -167,12 +167,9 @@ struct StatsView: View {
                                 .font(.caption2).foregroundStyle(Theme.inkSoft)
                         }
                 }
-                if let h = hoverDay, let day = days.first(where: { cal.isDate($0.day, equalTo: h, toGranularity: unit) }) {
-                    RuleMark(x: .value("Day", day.day, unit: unit))
+                if let h = hoverDay {
+                    RuleMark(x: .value("Day", h, unit: unit))
                         .foregroundStyle(Theme.ink.opacity(0.06))
-                        .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
-                            tooltip(day, unit: unit, days: days, now: now)
-                        }
                 }
             }
             .chartForegroundStyleScale(domain: names, range: colors)
@@ -188,7 +185,34 @@ struct StatsView: View {
                     AxisValueLabel { if let h = v.as(Double.self) { Text("\(Int(h))h") } }
                 }
             }
-            .chartXSelection(value: $hoverDay)
+            // Only the hovered day or month is kept, so moving within a bar doesn't redraw the chart.
+            .chartXSelection(value: Binding(
+                get: { hoverDay },
+                set: { new in
+                    let b = new.flatMap { cal.dateInterval(of: unit, for: $0)?.start }
+                    if b != hoverDay { hoverDay = b }
+                }))
+            // The tooltip floats above the chart rather than being part of it, so showing it
+            // never changes the chart's layout (which made it jitter under the pointer).
+            .chartOverlay { proxy in
+                GeometryReader { geo in
+                    if let h = hoverDay,
+                       let day = days.first(where: { cal.isDate($0.day, equalTo: h, toGranularity: unit) }),
+                       let plot = proxy.plotFrame,
+                       let x0 = proxy.position(forX: h),
+                       let x1 = proxy.position(forX: cal.dateInterval(of: unit, for: h)!.end) {
+                        let frame = geo[plot]
+                        let mid = frame.minX + (x0 + x1) / 2
+                        let w: CGFloat = 200
+                        tooltip(day, unit: unit, days: days, now: now)
+                            .frame(width: w)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .offset(x: min(max(mid - w / 2, frame.minX), frame.maxX - w), y: frame.minY + 4)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
             .chartLegend(position: .bottom, alignment: .leading)
             .frame(height: 260)
         }
