@@ -274,9 +274,7 @@ final class Store {
     func start(_ projectID: UUID, note: String = "") {
         let t = Date()
         stop(at: t)
-        if prefs.autoStartDay {
-            if workday(t)?.start == nil { startDay(at: t) } else if workday(t)?.end != nil { resumeDay() }
-        }
+        wakeDay(t)
         // A plan already under way ends where the timer starts; one that has barely begun
         // stays a plan and is pushed back by the timer like any other.
         for i in data.entries.indices where data.entries[i].start < t && (data.entries[i].end ?? t) > t {
@@ -284,6 +282,12 @@ final class Store {
         }
         data.entries.append(Entry(projectID: projectID, start: t, end: nil, note: note))
         selectedDay = t.startOfDay
+    }
+
+    /// A timer starting means the day is on, unless that's switched off in Settings.
+    private func wakeDay(_ t: Date) {
+        guard prefs.autoStartDay else { return }
+        if workday(t)?.start == nil { startDay(at: t) } else if workday(t)?.end != nil { resumeDay() }
     }
 
     /// A running timer owns the time it covers: plans it runs into are pushed back as it goes,
@@ -330,6 +334,49 @@ final class Store {
         else { return }
         start(last.projectID, note: last.note)
     }
+
+    /// ⌘R: the selected entry if there is one, otherwise the last one.
+    func resumeSelectedOrLast() {
+        if let id = selectedEntryID, let x = data.entries.first(where: { $0.id == id }), !x.isRunning {
+            resume(x.id)
+        } else {
+            resumeLast()
+        }
+    }
+
+    /// Starts a new timer on the entry's project, with its note.
+    func resume(_ id: UUID) {
+        guard let x = data.entries.first(where: { $0.id == id }) else { return }
+        start(x.projectID, note: x.note)
+    }
+
+    /// An entry that ended earlier today with nothing logged since can carry on as if it never stopped.
+    func canContinue(_ id: UUID) -> Bool {
+        let now = Date()
+        guard running == nil, let x = data.entries.first(where: { $0.id == id }),
+              let end = x.end, end <= now, end.isToday else { return false }
+        return !data.entries.contains { $0.id != id && $0.start >= end && $0.start < now }
+    }
+
+    /// Reopens the entry so the time since it ended counts too.
+    func continueEntry(_ id: UUID) {
+        guard canContinue(id), let i = data.entries.firstIndex(where: { $0.id == id }) else { return }
+        wakeDay(Date())
+        data.entries[i].end = nil
+        selectedEntryID = id
+    }
+
+    // MARK: Zoom
+
+    static let hourHeights: ClosedRange<Double> = 24...288
+    static let defaultHourHeight: Double = 64
+
+    func setHourHeight(_ h: Double) {
+        let h = min(max(h, Self.hourHeights.lowerBound), Self.hourHeights.upperBound)
+        if abs(h - prefs.hourHeight) > 0.01 { data.preferences.hourHeight = h }
+    }
+
+    func zoom(_ factor: Double) { setHourHeight(prefs.hourHeight * factor) }
 
     // MARK: Editing
 

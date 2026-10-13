@@ -20,6 +20,10 @@ enum Snapshot {
         steps.insert(("calendar-workdays", { store.span = .workdays; store.goToday() }), at: 2)
         steps.insert(("calendar-week", { store.span = .week }), at: 3)
         steps.insert(("calendar-day", { store.span = .day }), at: 4)
+        let height = store.prefs.hourHeight
+        steps.insert(("calendar-zoom-in", { store.setHourHeight(200) }), at: 5)
+        steps.insert(("calendar-zoom-out", { store.setHourHeight(28) }), at: 6)
+        steps.insert(("calendar-zoom-reset", { store.setHourHeight(height) }), at: 7)
         steps.append(("palette", { store.pane = .today; store.goToday(); store.showPalette = true }))
         steps.append(("editor", { store.showPalette = false; store.newEntry() }))
 

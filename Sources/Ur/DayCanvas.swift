@@ -5,6 +5,8 @@ import SwiftUI
 /// - Drag a block to move it (sideways to another day), drag its edges to resize.
 /// - Drag the amber edge of the work day to change when it started or ended.
 /// - Right-click to start or end the day at that time.
+/// - Pinch or ⌘+ / ⌘− to zoom.
+/// Dragged times snap to other blocks, the day's start and end, and now; hold ⌥ to place freely.
 struct CalendarCanvas: View {
     @Environment(Store.self) private var store
     let days: [Date]
@@ -13,6 +15,11 @@ struct CalendarCanvas: View {
     @State private var adjust: Adjust?
     @State private var bound: Bound?
     @State private var pointer: Pointer?
+    /// The time a drag has snapped to, drawn as a guide line.
+    @State private var guide: Date?
+    @State private var scroller = ScrollerRef()
+    /// Hour height when a pinch began, and where in the viewport it is centred.
+    @State private var pinch: (height: Double, y: CGFloat)?
 
     struct Draft { var col: Int; var start: Date; var end: Date }
     struct Adjust { var id: UUID; var start: Date; var end: Date? }
@@ -31,6 +38,7 @@ struct CalendarCanvas: View {
     }
 
     private let gutter: CGFloat = 58
+    private let pad: CGFloat = 12
     private var hourH: CGFloat { CGFloat(store.prefs.hourHeight) }
     private var multi: Bool { days.count > 1 }
 
@@ -57,10 +65,15 @@ struct CalendarCanvas: View {
                                 content(colW: colW, now: now)
                             }
                             .frame(height: hourH * 24)
-                            .padding(.vertical, 12)
+                            .padding(.vertical, pad)
+                            .background(ScrollerFinder(ref: scroller))
                         }
+                        .simultaneousGesture(pinchGesture)
                         .onAppear { scroll(proxy) }
                         .onChange(of: days) { scroll(proxy) }
+                        .onChange(of: store.prefs.hourHeight) { old, new in
+                            keepAnchored(from: old, to: new)
+                        }
                     }
                 }
             }
@@ -81,9 +94,18 @@ struct CalendarCanvas: View {
             ForEach(0..<24, id: \.self) { h in
                 ZStack(alignment: .topLeading) {
                     Rectangle().fill(Theme.line).frame(height: 1).padding(.leading, gutter)
-                    Rectangle().fill(Theme.line.opacity(0.45)).frame(height: 1)
-                        .padding(.leading, gutter)
-                        .offset(y: hourH / 2)
+                    if hourH >= 36 {
+                        Rectangle().fill(Theme.line.opacity(0.45)).frame(height: 1)
+                            .padding(.leading, gutter)
+                            .offset(y: hourH / 2)
+                    }
+                    if hourH >= 150 {
+                        ForEach([1, 3], id: \.self) { q in
+                            Rectangle().fill(Theme.line.opacity(0.22)).frame(height: 1)
+                                .padding(.leading, gutter)
+                                .offset(y: hourH * CGFloat(q) / 4)
+                        }
+                    }
                     Text(String(format: "%02d:00", h))
                         .font(.system(size: 10, weight: .medium).monospacedDigit())
                         .foregroundStyle(Theme.inkSoft)
@@ -102,9 +124,16 @@ struct CalendarCanvas: View {
         CGFloat(d.timeIntervalSince(day.startOfDay) / 3600) * hourH
     }
 
+    private func rawDate(atY y: CGFloat, in day: Date) -> Date {
+        day.startOfDay.addingTimeInterval(Double(y / hourH) * 3600)
+    }
+
     private func date(atY y: CGFloat, in day: Date) -> Date {
+        clamp(rawDate(atY: y, in: day).snapped(to: store.prefs.snapMinutes), to: day)
+    }
+
+    private func clamp(_ t: Date, to day: Date) -> Date {
         let s = day.startOfDay
-        let t = s.addingTimeInterval(Double(y / hourH) * 3600).snapped(to: store.prefs.snapMinutes)
         return min(max(t, s), s.adding(days: 1))
     }
 
@@ -156,6 +185,13 @@ struct CalendarCanvas: View {
 
             ForEach(Array(days.enumerated()), id: \.offset) { i, day in
                 if day.isToday { nowLine(now, col: i, colW: colW) }
+                if let g = guide, g >= day.startOfDay, g <= day.startOfDay.adding(days: 1) {
+                    Rectangle()
+                        .fill(Theme.gran)
+                        .frame(width: blockW(colW) + 6, height: 1.5)
+                        .offset(x: colX(i, colW) - 3, y: y(g, in: day) + 0.25)
+                        .allowsHitTesting(false)
+                }
             }
 
             if let d = draft {
@@ -273,8 +309,12 @@ struct CalendarCanvas: View {
     private func createGesture(_ col: Int, _ day: Date) -> some Gesture {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("calendar"))
             .onChanged { v in
-                let a = date(atY: v.startLocation.y, in: day), b = date(atY: v.location.y, in: day)
+                let targets = snapTargets()
+                let a = clamp(snap(rawDate(atY: v.startLocation.y, in: day), targets).time, to: day)
+                let pulled = snap(rawDate(atY: v.location.y, in: day), targets)
+                let b = clamp(pulled.time, to: day)
                 draft = Draft(col: col, start: min(a, b), end: max(a, b))
+                guide = pulled.magnet
             }
             .onEnded { _ in
                 if let d = draft, d.end.timeIntervalSince(d.start) >= 60 {
@@ -282,6 +322,7 @@ struct CalendarCanvas: View {
                     store.newEntry(start: d.start, end: d.end)
                 }
                 draft = nil
+                guide = nil
             }
     }
 
@@ -291,9 +332,21 @@ struct CalendarCanvas: View {
                 store.selectedEntryID = e.id
                 let days = multi && !e.isRunning
                     ? column(atX: v.location.x, colW) - column(atX: v.startLocation.x, colW) : 0
-                let s = e.start.addingTimeInterval(delta(v.translation.height))
-                    .snapped(to: store.prefs.snapMinutes)
-                    .adding(days: days)
+                let now = Date()
+                let raw = e.start.addingTimeInterval(delta(v.translation.height)).adding(days: days)
+                let length = e.effectiveEnd(now).timeIntervalSince(e.start)
+                let targets = snapTargets(excluding: e.id)
+                // Whichever edge is nearer to something worth lining up with wins.
+                let head = magnet(raw, targets)
+                let tail = e.isRunning ? nil : magnet(raw.addingTimeInterval(length), targets)
+                let s: Date
+                if let h = head, tail == nil || abs(h.timeIntervalSince(raw)) <= abs(tail!.timeIntervalSince(raw.addingTimeInterval(length))) {
+                    s = h; guide = h
+                } else if let t = tail {
+                    s = t.addingTimeInterval(-length); guide = t
+                } else {
+                    s = grid(raw); guide = nil
+                }
                 if e.isRunning {
                     adjust = Adjust(id: e.id, start: min(s, Date()), end: nil)
                 } else {
@@ -301,6 +354,15 @@ struct CalendarCanvas: View {
                 }
             }
             .onEnded { _ in commit() }
+    }
+
+    private var pinchGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { v in
+                if pinch == nil { pinch = (store.prefs.hourHeight, v.startLocation.y) }
+                store.setHourHeight(pinch!.height * v.magnification)
+            }
+            .onEnded { _ in pinch = nil }
     }
 
     private func handle(_ e: Entry, top: Bool) -> some View {
@@ -315,13 +377,18 @@ struct CalendarCanvas: View {
                     .onChanged { v in
                         store.selectedEntryID = e.id
                         let d = delta(v.translation.height)
-                        let snap = store.prefs.snapMinutes
+                        let minimum = Double(store.prefs.snapMinutes * 60)
+                        let targets = snapTargets(excluding: e.id)
                         if top {
-                            let limit = e.effectiveEnd().addingTimeInterval(-Double(snap * 60))
-                            adjust = Adjust(id: e.id, start: min(e.start.addingTimeInterval(d).snapped(to: snap), limit), end: e.end)
+                            let limit = e.effectiveEnd().addingTimeInterval(-minimum)
+                            let pulled = snap(e.start.addingTimeInterval(d), targets)
+                            adjust = Adjust(id: e.id, start: min(pulled.time, limit), end: e.end)
+                            guide = pulled.magnet
                         } else if let end = e.end {
-                            let limit = e.start.addingTimeInterval(Double(snap * 60))
-                            adjust = Adjust(id: e.id, start: e.start, end: max(end.addingTimeInterval(d).snapped(to: snap), limit))
+                            let limit = e.start.addingTimeInterval(minimum)
+                            let pulled = snap(end.addingTimeInterval(d), targets)
+                            adjust = Adjust(id: e.id, start: e.start, end: max(pulled.time, limit))
+                            guide = pulled.magnet
                         }
                     }
                     .onEnded { _ in commit() }
@@ -334,6 +401,61 @@ struct CalendarCanvas: View {
             if multi { store.selectedDay = a.start.startOfDay }
         }
         adjust = nil
+        guide = nil
+    }
+
+    // MARK: Snapping
+
+    /// Times worth lining up with: the edges of other blocks, each day's start and end, and now.
+    private func snapTargets(excluding id: UUID? = nil, skipBoundsOf skipDay: Date? = nil) -> [Date] {
+        let now = Date()
+        var out = [now]
+        for x in store.entries(from: days[0].adding(days: -1), to: days[days.count - 1].adding(days: 2), now: now) where x.id != id {
+            out.append(x.start)
+            out.append(x.effectiveEnd(now))
+        }
+        for d in days where d.startOfDay != skipDay?.startOfDay {
+            if let w = store.workday(d) { out += [w.start, w.end].compactMap { $0 } }
+        }
+        return out
+    }
+
+    /// ⌥ turns snapping off, down to the minute.
+    private var freehand: Bool { NSEvent.modifierFlags.contains(.option) }
+
+    /// The nearest target within a few points of `t`, if any.
+    private func magnet(_ t: Date, _ targets: [Date]) -> Date? {
+        guard !freehand else { return nil }
+        let reach = delta(8)
+        let best = targets.min { abs($0.timeIntervalSince(t)) < abs($1.timeIntervalSince(t)) }
+        return best.flatMap { abs($0.timeIntervalSince(t)) <= reach ? $0 : nil }
+    }
+
+    private func grid(_ t: Date) -> Date { t.snapped(to: freehand ? 1 : store.prefs.snapMinutes) }
+
+    /// Pulled to a target when one is close, otherwise to the grid.
+    private func snap(_ t: Date, _ targets: [Date]) -> (time: Date, magnet: Date?) {
+        if let m = magnet(t, targets) { return (m, m) }
+        return (grid(t), nil)
+    }
+
+    // MARK: Zoom
+
+    /// Keeps the time under the pinch (or the middle of the view) in place while the hours grow or shrink.
+    private func keepAnchored(from old: Double, to new: Double) {
+        guard let sv = scroller.view, let doc = sv.documentView, old > 0 else { return }
+        let visible = sv.contentView.bounds
+        let anchorY = pinch?.y ?? visible.height / 2
+        let flipped = doc.isFlipped
+        let top = flipped ? visible.minY : doc.bounds.height - visible.maxY
+        let hours = (top + anchorY - pad) / old
+        DispatchQueue.main.async {
+            let docH = doc.bounds.height
+            let newTop = min(max(0, hours * new + pad - anchorY), max(0, docH - visible.height))
+            let y = flipped ? newTop : docH - newTop - visible.height
+            sv.contentView.scroll(to: NSPoint(x: visible.minX, y: y))
+            sv.reflectScrolledClipView(sv.contentView)
+        }
     }
 
     // MARK: Start and end of the day
@@ -377,13 +499,15 @@ struct CalendarCanvas: View {
         DragGesture(minimumDistance: 1, coordinateSpace: .named("calendar"))
             .onChanged { v in
                 let w = store.workday(day)
-                let snap = Double(store.prefs.snapMinutes * 60)
-                var t = date(atY: v.location.y, in: day)
+                let minimum = Double(store.prefs.snapMinutes * 60)
+                let pulled = snap(rawDate(atY: v.location.y, in: day), snapTargets(skipBoundsOf: day))
+                var t = clamp(pulled.time, to: day)
+                guide = pulled.magnet
                 if isStart {
                     let end = w?.end ?? (day.isToday ? Date() : day.startOfDay.adding(days: 1))
-                    t = min(t, end.addingTimeInterval(-snap))
+                    t = min(t, end.addingTimeInterval(-minimum))
                 } else {
-                    if let s = w?.start { t = max(t, s.addingTimeInterval(snap)) }
+                    if let s = w?.start { t = max(t, s.addingTimeInterval(minimum)) }
                     if day.isToday { t = min(t, Date()) }
                 }
                 bound = Bound(day: day.startOfDay, isStart: isStart, time: t)
@@ -394,6 +518,7 @@ struct CalendarCanvas: View {
                     store.setDayBounds(day, start: b.isStart ? b.time : w?.start, end: b.isStart ? w?.end : b.time)
                 }
                 bound = nil
+                guide = nil
             }
     }
 
@@ -490,6 +615,7 @@ struct EntryBlock: View {
     let selected: Bool
     /// Several days side by side: put the time under the name.
     var narrow = false
+    @State private var hover = false
 
     var body: some View {
         let color = store.color(entry.projectID)
@@ -553,7 +679,22 @@ struct EntryBlock: View {
         .overlay {
             if selected { RoundedRectangle(cornerRadius: 5).strokeBorder(color, lineWidth: 2) }
         }
+        .overlay(alignment: duration < 40 * 60 ? .trailing : .topTrailing) {
+            if hover && !entry.isRunning && !planned && end.timeIntervalSince(start) >= 10 * 60 {
+                Button { store.resume(entry.id) } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.white)
+                        .frame(width: 20, height: 20)
+                        .background(Circle().fill(color))
+                }
+                .buttonStyle(.plain)
+                .padding(3)
+                .help("Resume \(store.name(entry.projectID)) now")
+            }
+        }
         .contentShape(Rectangle())
+        .onHover { hover = $0 }
         .onTapGesture(count: 2) { store.edit(entry.id) }
         .onTapGesture { store.selectedEntryID = entry.id }
         .contextMenu { EntryMenu(entry: entry) }
@@ -577,10 +718,13 @@ struct EntryMenu: View {
                 Button(p.name) { store.setProject(entry.id, p.id) }
             }
         }
-        if !entry.isRunning {
-            Button("Continue now") { store.start(entry.projectID, note: entry.note) }
-        } else {
+        if entry.isRunning {
             Button("Stop") { store.stop() }
+        } else {
+            Button("Resume") { store.resume(entry.id) }
+            if store.canContinue(entry.id), let end = entry.end {
+                Button("Resume from \(Fmt.time(end)), Counting the Break") { store.continueEntry(entry.id) }
+            }
         }
         Divider()
         Button("Delete", role: .destructive) { store.delete(entry.id) }
@@ -614,5 +758,24 @@ struct GapBlock: View {
             .contentShape(Rectangle())
             .onHover { hover = $0 }
             .onTapGesture { store.newEntry(start: start, end: end) }
+    }
+}
+
+/// The AppKit scroll view behind a SwiftUI `ScrollView`, so zooming can keep its place precisely.
+final class ScrollerRef {
+    weak var view: NSScrollView?
+}
+
+struct ScrollerFinder: NSViewRepresentable {
+    let ref: ScrollerRef
+
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { ref.view = v.enclosingScrollView }
+        return v
+    }
+
+    func updateNSView(_ v: NSView, context: Context) {
+        if ref.view == nil { DispatchQueue.main.async { ref.view = v.enclosingScrollView } }
     }
 }

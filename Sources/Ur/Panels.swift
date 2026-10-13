@@ -126,8 +126,8 @@ struct SettingsView: View {
                 Picker("Snap to", selection: $store.data.preferences.snapMinutes) {
                     ForEach([1, 5, 10, 15], id: \.self) { Text("\($0) min").tag($0) }
                 }
-                Slider(value: $store.data.preferences.hourHeight, in: 40...140) {
-                    Text("Hour height")
+                Slider(value: $store.data.preferences.hourHeight, in: Store.hourHeights) {
+                    Text("Zoom")
                 }
             }
             Section("System") {
@@ -162,7 +162,7 @@ struct ShortcutsSheet: View {
             ("⌘K", "Command bar: start, switch, or log time"),
             ("⌃⌥Space", "Command bar from any app"),
             ("⌘.", "Stop the timer"),
-            ("⌘R", "Resume the last project"),
+            ("⌘R", "Resume the selected entry, or the last one"),
             ("⌘D", "Start, end, or resume the work day"),
         ]),
         ("Entries", [
@@ -171,6 +171,8 @@ struct ShortcutsSheet: View {
             ("⌘⌫", "Delete the selected entry"),
             ("Drag", "On the timeline: log a new block"),
             ("Drag a block", "Move it, also to another day; drag its edges to resize"),
+            ("⌥ while dragging", "Turn off snapping"),
+            ("Pinch  ⌘+  ⌘−  ⌘0", "Zoom the calendar"),
             ("Drag the amber line", "Change when the day started or ended"),
             ("Right-click", "Start or end the day at that time"),
         ]),

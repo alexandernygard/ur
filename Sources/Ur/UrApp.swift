@@ -93,7 +93,9 @@ struct UrCommands: Commands {
             Button("Stop Timer") { store.stop() }
                 .keyboardShortcut(".")
                 .disabled(store.running == nil)
-            Button("Resume Last") { store.resumeLast() }
+            Button(store.selectedEntryID != nil && store.selectedEntryID != store.running?.id ? "Resume Selected" : "Resume Last") {
+                store.resumeSelectedOrLast()
+            }
                 .keyboardShortcut("r")
                 .disabled(store.isModal)
             Divider()
@@ -109,6 +111,16 @@ struct UrCommands: Commands {
             Button("Delete Entry") { store.deleteSelected() }
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(store.isModal || store.selectedEntryID == nil || store.pane == .projects)
+        }
+
+        CommandGroup(after: .toolbar) {
+            Button("Zoom In") { store.zoom(1.25) }
+                .keyboardShortcut("+")
+            Button("Zoom Out") { store.zoom(0.8) }
+                .keyboardShortcut("-")
+            Button("Actual Size") { store.setHourHeight(Store.defaultHourHeight) }
+                .keyboardShortcut("0")
+            Divider()
         }
 
         CommandMenu("Go") {
