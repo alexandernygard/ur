@@ -1,0 +1,54 @@
+# Push a tag like v1.2.0 to build Ur for Apple Silicon and Intel, publish it as a
+# GitHub release, and point the Homebrew cask in alexandernygard/homebrew-tap at it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: UNIVERSAL=1 VERSION="$TAG" ./scripts/build-app.sh
+
+      - name: Package
+        run: |
+          ditto -c -k --keepParent build/Ur.app build/Ur.zip
+          echo "SHA256=$(shasum -a 256 build/Ur.zip | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" build/Ur.zip \
+            --title "Ur ${TAG#v}" \
+            --generate-notes \
+            --verify-tag
+
+      - name: Update Homebrew cask
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set, so Casks/ur.rb in homebrew-tap was not updated. Set version ${TAG#v} and sha256 $SHA256 by hand."
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/alexandernygard/homebrew-tap.git" tap
+          cd tap
+          sed -i '' -E \
+            -e "s/^  version \".*\"/  version \"${TAG#v}\"/" \
+            -e "s/^  sha256 \".*\"/  sha256 \"$SHA256\"/" \
+            Casks/ur.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "ur ${TAG#v}"
+          git push

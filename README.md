@@ -6,7 +6,21 @@
 
 ## Install
 
-You need macOS 14 or later and Swift (the Command Line Tools are enough; full Xcode isn't required).
+You need macOS 14 or later, on Apple Silicon or Intel.
+
+**With Homebrew:**
+
+```sh
+brew install --cask alexandernygard/tap/ur
+```
+
+Update later with `brew upgrade --cask ur`.
+
+**Without Homebrew:** download `Ur.zip` from the [latest release](https://github.com/alexandernygard/ur/releases/latest), unzip it and drag `Ur.app` into Applications.
+
+**The first time you open it**, macOS says it can't verify the developer, because Ur isn't signed with a paid Apple developer account. Click **Done**, then open **System Settings → Privacy & Security**, scroll down to the message about Ur and click **Open Anyway**. You only need to do this once.
+
+**From source** (needs Swift; the Command Line Tools are enough):
 
 ```sh
 xcode-select --install          # only if you don't have Swift yet
@@ -63,5 +77,7 @@ swift build                 # debug build
 ./scripts/build-app.sh      # bundle build/Ur.app
 swift scripts/make-icon.swift Resources/AppIcon.icns   # regenerate the icon
 ```
+
+To publish a new version, push a tag: `git tag v1.2.0 && git push origin v1.2.0`. The Release workflow builds a universal app, attaches `Ur.zip` to a GitHub release and updates the Homebrew cask. `UNIVERSAL=1 ./scripts/build-app.sh` makes the same universal build locally.
 
 `UR_DATA_DIR=/tmp/ur-demo` runs the app against a different data folder. `UR_SNAPSHOT=/some/dir` renders each screen to PNG and then quits.

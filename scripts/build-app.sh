@@ -4,11 +4,26 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null | sed 's/^v//' || echo 1.0)}"
+VERSION="${VERSION#v}"
 APP="build/Ur.app"
 
-echo "→ Compiling (release)…"
-swift build -c release --product Ur
-BIN="$(swift build -c release --show-bin-path)/Ur"
+if [ "${UNIVERSAL:-0}" = "1" ]; then
+    # One binary for Apple Silicon and Intel. Built per architecture and merged,
+    # since `--arch a --arch b` needs full Xcode.
+    echo "→ Compiling (release, universal)…"
+    BINS=()
+    for ARCH in arm64 x86_64; do
+        swift build -c release --product Ur --triple "$ARCH-apple-macosx14.0"
+        BINS+=("$(swift build -c release --triple "$ARCH-apple-macosx14.0" --show-bin-path)/Ur")
+    done
+    BIN="build/Ur-universal"
+    mkdir -p build
+    lipo -create "${BINS[@]}" -output "$BIN"
+else
+    echo "→ Compiling (release)…"
+    swift build -c release --product Ur
+    BIN="$(swift build -c release --show-bin-path)/Ur"
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
