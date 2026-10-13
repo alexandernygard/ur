@@ -161,5 +161,4 @@ struct UrCommands: Commands {
 }
 
 extension Notification.Name {
-    static let newGroup = Notification.Name("ur.newGroup")
 }

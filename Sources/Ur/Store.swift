@@ -58,6 +58,14 @@ struct Tally: Identifiable {
     var total: TimeInterval
 }
 
+struct ProjectFacts {
+    var total: TimeInterval = 0
+    var thisWeek: TimeInterval = 0
+    /// Tracked time per week, oldest first, ending with this week.
+    var weeks: [TimeInterval]
+    var last: Date?
+}
+
 struct DayStat: Identifiable {
     var day: Date
     var perProject: [UUID: TimeInterval]
@@ -160,18 +168,24 @@ final class Store {
         body()
         undoDepth -= 1
         guard outer, data != before else { return }
-        registerUndo(restoring: before, name)
+        let projects = data.projects != before.projects || data.groups != before.groups
+        registerUndo(restoring: before, name, projects: projects)
     }
 
-    private func registerUndo(restoring snapshot: AppData, _ name: String) {
+    /// Undo puts back time (entries and work days), and the projects and groups only when the
+    /// action itself changed them, so undoing a timer stop doesn't revert a rename made since.
+    private func registerUndo(restoring snapshot: AppData, _ name: String, projects: Bool) {
         guard let um = undoManager else { return }
         um.registerUndo(withTarget: self) { store in
             let current = store.data
-            store.registerUndo(restoring: current, name)
-            // Undo is about time: entries and work days. Projects and settings stay as they are now.
+            store.registerUndo(restoring: current, name, projects: projects)
             var restored = current
             restored.entries = snapshot.entries
             restored.days = snapshot.days
+            if projects {
+                restored.projects = snapshot.projects
+                restored.groups = snapshot.groups
+            }
             store.data = restored
             if let id = store.selectedEntryID, !restored.entries.contains(where: { $0.id == id }) { store.selectedEntryID = nil }
         }
@@ -665,9 +679,19 @@ final class Store {
         let used = Set(data.projects.map(\.colorIndex))
         let color = (0..<Theme.projectPalette.count).first { !used.contains($0) } ?? data.projects.count
         let p = Project(name: name.trimmingCharacters(in: .whitespaces), colorIndex: color, groupID: group)
-        data.projects.append(p)
-        normalizeProjectOrder()
+        undoable("New Project") {
+            data.projects.append(p)
+            normalizeProjectOrder()
+        }
         return p
+    }
+
+    /// A name can't be left blank or padded; a blank one becomes "Untitled project".
+    func tidyName(_ id: UUID) {
+        guard let i = data.projects.firstIndex(where: { $0.id == id }) else { return }
+        let n = data.projects[i].name.trimmingCharacters(in: .whitespaces)
+        let tidy = n.isEmpty ? "Untitled project" : n
+        if tidy != data.projects[i].name { data.projects[i].name = tidy }
     }
 
     /// Archived projects keep their history but leave the chips, shortcuts and menus.
@@ -699,15 +723,48 @@ final class Store {
     @discardableResult
     func addGroup(_ name: String) -> ProjectGroup {
         let g = ProjectGroup(name: name.trimmingCharacters(in: .whitespaces))
-        data.groups.append(g)
+        undoable("New Group") { data.groups.append(g) }
         return g
     }
 
     /// Removes the group. Its projects stay, ungrouped.
     func deleteGroup(_ id: UUID) {
-        for i in data.projects.indices where data.projects[i].groupID == id { data.projects[i].groupID = nil }
-        data.groups.removeAll { $0.id == id }
-        normalizeProjectOrder()
+        undoable("Delete Group") {
+            for i in data.projects.indices where data.projects[i].groupID == id { data.projects[i].groupID = nil }
+            data.groups.removeAll { $0.id == id }
+            normalizeProjectOrder()
+        }
+    }
+
+    /// Moves a project into a group (nil for none), just before `before`, or to the end of the group.
+    func moveProject(_ id: UUID, to groupID: UUID?, before: UUID? = nil) {
+        guard id != before, let i = data.projects.firstIndex(where: { $0.id == id }) else { return }
+        undoable("Move Project") {
+            var p = data.projects.remove(at: i)
+            p.groupID = groupID
+            if let before, let j = data.projects.firstIndex(where: { $0.id == before }) {
+                data.projects.insert(p, at: j)
+            } else if let last = data.projects.lastIndex(where: { $0.groupID == groupID && !$0.archived }) {
+                data.projects.insert(p, at: last + 1)
+            } else {
+                data.projects.append(p)
+            }
+            normalizeProjectOrder()
+        }
+    }
+
+    /// Moves a group to just before another, or to the end.
+    func moveGroup(_ id: UUID, before: UUID?) {
+        guard id != before, let i = data.groups.firstIndex(where: { $0.id == id }) else { return }
+        undoable("Move Group") {
+            let g = data.groups.remove(at: i)
+            if let before, let j = data.groups.firstIndex(where: { $0.id == before }) {
+                data.groups.insert(g, at: j)
+            } else {
+                data.groups.append(g)
+            }
+            normalizeProjectOrder()
+        }
     }
 
     func setGroup(_ projectID: UUID, to groupID: UUID?) {
@@ -788,6 +845,27 @@ final class Store {
         guard byTotal else { return out }
         return out.map { var x = $0; x.projects.sort { $0.time > $1.time }; return x }
             .sorted { $0.total > $1.total }
+    }
+
+    /// Totals, recent weeks and last use for every project, in one pass over the entries.
+    func projectFacts(weeks: Int = 12, now: Date = .now) -> [UUID: ProjectFacts] {
+        let thisWeek = cal.dateInterval(of: .weekOfYear, for: now)!.start
+        let first = thisWeek.adding(days: -7 * (weeks - 1))
+        var out: [UUID: ProjectFacts] = [:]
+        for e in data.entries where e.start <= now {
+            var f = out[e.projectID] ?? ProjectFacts(weeks: Array(repeating: 0, count: weeks))
+            let d = e.duration(now: now)
+            f.total += d
+            f.last = max(f.last ?? .distantPast, e.effectiveEnd(now))
+            if e.start >= first {
+                let days = cal.dateComponents([.day], from: first, to: e.start.startOfDay).day ?? 0
+                let w = min(weeks - 1, max(0, days / 7))
+                f.weeks[w] += d
+                if e.start >= thisWeek { f.thisWeek += d }
+            }
+            out[e.projectID] = f
+        }
+        return out
     }
 
     func totalTime(_ projectID: UUID) -> TimeInterval {
