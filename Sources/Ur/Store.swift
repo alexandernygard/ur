@@ -22,6 +22,23 @@ enum Pane: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+/// How much the timesheet covers.
+enum SheetPeriod: String, CaseIterable, Identifiable {
+    case week, month
+    var id: String { rawValue }
+    var title: String { self == .week ? "Week" : "Month" }
+}
+
+/// How the timesheet writes hours.
+enum HourFormat: String, CaseIterable, Identifiable {
+    case clock, decimal
+    var id: String { rawValue }
+    var title: String { self == .clock ? "h:mm" : "Decimal" }
+    func string(_ t: TimeInterval) -> String {
+        self == .clock ? Fmt.hmm(t) : String(format: "%.2f", max(0, t) / 3600)
+    }
+}
+
 /// How many days the calendar shows side by side.
 enum Span: String, CaseIterable, Identifiable {
     case day, workdays, week
@@ -99,6 +116,9 @@ final class Store {
     var selectedDay = Date().startOfDay
     var span: Span = Span(rawValue: UserDefaults.standard.string(forKey: "span") ?? "") ?? .day {
         didSet { UserDefaults.standard.set(span.rawValue, forKey: "span") }
+    }
+    var sheetPeriod: SheetPeriod = SheetPeriod(rawValue: UserDefaults.standard.string(forKey: "sheetPeriod") ?? "") ?? .week {
+        didSet { UserDefaults.standard.set(sheetPeriod.rawValue, forKey: "sheetPeriod") }
     }
     var selectedEntryID: UUID?
     var editing: EntryDraft?
@@ -940,8 +960,70 @@ final class Store {
     }
 
     func step(_ dir: Int) {
+        if pane == .week && sheetPeriod == .month {
+            selectedDay = selectedDay.startOfMonth.adding(months: dir)
+            return
+        }
         let byWeek = pane == .week || (pane == .today && span != .day)
         selectedDay = selectedDay.adding(days: byWeek ? 7 * dir : dir)
+    }
+
+    /// The timesheet's period around the selected day.
+    var sheetInterval: DateInterval {
+        switch sheetPeriod {
+        case .week: DateInterval(start: selectedDay.startOfWeek, end: selectedDay.startOfWeek.adding(days: 7))
+        case .month: DateInterval(start: selectedDay.startOfMonth, end: selectedDay.startOfMonth.adding(months: 1))
+        }
+    }
+
+    /// Shows a day in the calendar with the first entry for `projectID` selected.
+    func open(_ day: Date, project projectID: UUID? = nil) {
+        selectedDay = day.startOfDay
+        pane = .today
+        if let projectID { selectedEntryID = entries(on: day).first { $0.projectID == projectID }?.id }
+    }
+
+    /// Target hours for a day: the daily target on weekdays, nothing at the weekend.
+    func target(on day: Date) -> TimeInterval {
+        cal.isDateInWeekend(day) ? 0 : prefs.targetHours * 3600
+    }
+
+    /// Tracked time minus the target, over days that had any time tracked (days with none count
+    /// as days off). Today counts once the day has ended.
+    func flex(_ days: [DayStat], now: Date = .now) -> TimeInterval {
+        days.reduce(0) { acc, d in
+            guard d.total > 0, d.day < now.startOfDay || (d.day.isToday && d.end != nil) else { return acc }
+            return acc + d.total - target(on: d.day)
+        }
+    }
+
+    /// Tracked time per day key, in one pass over the entries.
+    func trackedPerDay(from: Date, to: Date, now: Date = .now) -> [String: TimeInterval] {
+        var out: [String: TimeInterval] = [:]
+        for x in data.entries where x.start < to && x.effectiveEnd(now) > from {
+            var d = max(x.start, from).startOfDay
+            while d < min(x.effectiveEnd(now), to) {
+                let e = d.adding(days: 1)
+                out[d.dayKey, default: 0] += x.duration(from: max(d, from), to: min(e, to), now: now)
+                d = e
+            }
+        }
+        return out
+    }
+
+    /// The flex balance since the start of the year.
+    func yearFlex(now: Date = .now) -> TimeInterval {
+        let start = cal.dateInterval(of: .year, for: now)!.start
+        let per = trackedPerDay(from: start, to: now.startOfDay.adding(days: 1), now: now)
+        var sum: TimeInterval = 0
+        var d = start
+        while d <= now.startOfDay {
+            if let t = per[d.dayKey], t > 0, d < now.startOfDay || recordedDay(d)?.end != nil {
+                sum += t - target(on: d)
+            }
+            d = d.adding(days: 1)
+        }
+        return sum
     }
 
     // MARK: Stats

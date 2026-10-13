@@ -24,6 +24,9 @@ enum Snapshot {
         steps.insert(("calendar-zoom-in", { store.setHourHeight(200) }), at: 5)
         steps.insert(("calendar-zoom-out", { store.setHourHeight(28) }), at: 6)
         steps.insert(("calendar-zoom-reset", { store.setHourHeight(height) }), at: 7)
+        steps.append(("timesheet-month", { store.pane = .week; store.sheetPeriod = .month }))
+        steps.append(("timesheet-last-week", { store.sheetPeriod = .week; store.selectedDay = Date().startOfDay.adding(days: -7) }))
+        steps.append(("today-again", { store.goToday() }))
         steps.append(("palette", { store.pane = .today; store.goToday(); store.showPalette = true }))
         steps.append(("editor", { store.showPalette = false; store.newEntry() }))
 
