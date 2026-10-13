@@ -34,31 +34,9 @@ struct StatsView: View {
 
     var body: some View {
         let i = interval
-        let now = Date()
-        let days = store.dayStats(from: i.start, to: min(i.end, now.startOfDay.adding(days: 1)), now: now)
-        let projectIDs = orderedProjects(days)
-
-        ScrollView {
-            VStack(alignment: .leading, spacing: 32) {
-                header
-                Figures(days: days, target: store.prefs.targetHours)
-                section("Hours per \(range == .year ? "month" : "day")") {
-                    hoursChart(days, projectIDs: projectIDs)
-                }
-                section("Start and end of day", note: "Amber bars run from when you started the day to when you ended it.") {
-                    spanChart(days)
-                }
-                HStack(alignment: .top, spacing: 32) {
-                    section("By project") { ProjectTable(days: days) }
-                        .frame(maxWidth: .infinity)
-                    section("Time of day", note: "When tracked time happens, summed over the period.") {
-                        hourOfDayChart(i, now: now)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-            }
-            .padding(28)
-            .frame(maxWidth: 1100, alignment: .leading)
+        // Redraw every minute so a running timer and today's day keep counting.
+        TimelineView(.everyMinute) { ctx in
+            content(i, now: ctx.date)
         }
         .navigationTitle("Stats")
         .navigationSubtitle(title)
@@ -85,6 +63,33 @@ struct StatsView: View {
                     Label("Export", systemImage: "square.and.arrow.up")
                 }
             }
+        }
+    }
+
+    private func content(_ i: DateInterval, now: Date) -> some View {
+        let days = store.dayStats(from: i.start, to: min(i.end, now.startOfDay.adding(days: 1)), now: now)
+        let projectIDs = orderedProjects(days)
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 32) {
+                header
+                Figures(days: days, target: store.prefs.targetHours)
+                section("Hours per \(range == .year ? "month" : "day")") {
+                    hoursChart(days, projectIDs: projectIDs, now: now)
+                }
+                section("Start and end of day", note: "Amber bars run from when you started the day to when you ended it.") {
+                    spanChart(days, now: now)
+                }
+                HStack(alignment: .top, spacing: 32) {
+                    section("By project") { ProjectTable(days: days) }
+                        .frame(maxWidth: .infinity)
+                    section("Time of day", note: "When tracked time happens, summed over the period.") {
+                        hourOfDayChart(i, now: now)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: 1100, alignment: .leading)
         }
     }
 
@@ -135,7 +140,7 @@ struct StatsView: View {
     }
 
     @ViewBuilder
-    private func hoursChart(_ days: [DayStat], projectIDs: [UUID]) -> some View {
+    private func hoursChart(_ days: [DayStat], projectIDs: [UUID], now: Date) -> some View {
         let names = projectIDs.map { store.name($0) }
         let colors = projectIDs.map { store.color($0) }
         let bars = buckets(days).flatMap { b, per in
@@ -166,7 +171,7 @@ struct StatsView: View {
                     RuleMark(x: .value("Day", day.day, unit: unit))
                         .foregroundStyle(Theme.ink.opacity(0.06))
                         .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
-                            tooltip(day, unit: unit, days: days)
+                            tooltip(day, unit: unit, days: days, now: now)
                         }
                 }
             }
@@ -190,7 +195,7 @@ struct StatsView: View {
     }
 
     @ViewBuilder
-    private func tooltip(_ day: DayStat, unit: Calendar.Component, days: [DayStat]) -> some View {
+    private func tooltip(_ day: DayStat, unit: Calendar.Component, days: [DayStat], now: Date) -> some View {
         let per: [UUID: TimeInterval] = unit == .month
             ? days.filter { cal.isDate($0.day, equalTo: day.day, toGranularity: .month) }
                 .reduce(into: [:]) { acc, d in for (k, v) in d.perProject { acc[k, default: 0] += v } }
@@ -207,8 +212,22 @@ struct StatsView: View {
                 }
                 .font(.caption)
             }
+            let total = per.values.reduce(0, +)
+            // The timer is still adding to this day (or month).
+            let bucket = cal.dateInterval(of: unit, for: day.day)!
+            let live = store.running.map { $0.start < bucket.end && now > bucket.start && now < bucket.end } ?? false
+            if per.count > 1 || live {
+                Divider()
+                HStack(spacing: 6) {
+                    Text(live ? "Total so far" : "Total")
+                    Spacer(minLength: 12)
+                    Text(Fmt.dur(total)).monospacedDigit()
+                }
+                .font(.caption.weight(.semibold))
+            }
             if unit == .day, let s = day.start {
-                Text("Day \(Fmt.time(s))–\(Fmt.time(day.end))").font(.caption).foregroundStyle(Theme.molte)
+                Text("Day \(Fmt.time(s))–\(day.end.map { Fmt.time($0) } ?? (day.day.isToday ? "now" : "–"))")
+                    .font(.caption).foregroundStyle(Theme.molte)
             }
         }
         .padding(8)
@@ -224,10 +243,10 @@ struct StatsView: View {
     }
 
     @ViewBuilder
-    private func spanChart(_ days: [DayStat]) -> some View {
+    private func spanChart(_ days: [DayStat], now: Date) -> some View {
         let spans = days.compactMap { d -> Span? in
             guard let s = d.start else { return nil }
-            let e = d.end ?? (d.day.isToday ? Date() : nil)
+            let e = d.end ?? (d.day.isToday ? now : nil)
             guard let e, e > s else { return nil }
             return Span(day: d.day, start: s.hoursIntoDay, end: min(24, e.timeIntervalSince(d.day) / 3600))
         }
