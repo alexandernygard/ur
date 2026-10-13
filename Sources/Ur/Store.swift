@@ -434,6 +434,18 @@ final class Store {
         start(last.projectID, note: last.note)
     }
 
+    /// What ⌘R or the play button would pick up: the selected entry, otherwise the last finished one.
+    var resumeCandidate: Entry? {
+        if let id = selectedEntryID, let x = data.entries.first(where: { $0.id == id }), !x.isRunning { return x }
+        let now = Date()
+        return data.entries.filter { $0.end != nil && $0.end! <= now }.max { $0.end! < $1.end! }
+    }
+
+    /// ⌘↩ and the big round button: stop the timer, or pick the last thing back up.
+    func toggleTimer() {
+        if running != nil { stop() } else if resumeCandidate != nil { resumeSelectedOrLast() } else { showPalette = true }
+    }
+
     /// ⌘R: the selected entry if there is one, otherwise the last one.
     func resumeSelectedOrLast() {
         if let id = selectedEntryID, let x = data.entries.first(where: { $0.id == id }), !x.isRunning {

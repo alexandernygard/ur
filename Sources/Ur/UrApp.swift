@@ -88,6 +88,9 @@ struct UrCommands: Commands {
                 .keyboardShortcut("k")
                 .disabled(store.editing != nil || store.showShortcuts)
             Divider()
+            Button(store.running != nil ? "Stop Timer" : "Start Timer") { store.toggleTimer() }
+                .keyboardShortcut(.return)
+                .disabled(store.isModal)
             Button(store.dayToggleTitle) { store.toggleDay() }
                 .keyboardShortcut("d")
                 .disabled(store.isModal)

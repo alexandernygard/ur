@@ -33,7 +33,7 @@ cd ur && ./install.sh
 ## How it works
 
 - **Start and end your day** with ⌘D. Both times are drawn in amber on the calendar and in stats. Drag the amber line to change them, or right-click anywhere on a day to start or end it at that time. Starting a timer also starts the day automatically (you can turn this off in Settings). The day always covers its entries: it starts no later than your first entry and ends no earlier than your last, so time you fill in for the morning moves the start back.
-- **Track the present** with ⌘1–⌘9, the project chips, or the menu bar. Switching projects stops the previous timer.
+- **Track the present** with the round button beside the clock (⌘↩): it stops the timer, or picks the last entry back up. Start a particular project with ⌘1–⌘9, the project chips, or the menu bar. Switching projects stops the previous timer.
 - **Fill in the past** by dragging on the timeline, clicking an unallocated gap, or pressing ⌘N. New time replaces whatever it overlaps: while you drag, the blocks it would replace fade, and the editor says what will be cut. A running timer is never removed this way; it picks up after the new time. Press Esc mid-drag to put things back.
 - **Undo** anything with ⌘Z: moves, resizes, deletes, starting and stopping, and changes to the day.
 - **Snap into place**: while you drag, a block's edges snap to the edges of other blocks, the start and end of the day, and the current time, and a green guide line shows what it snapped to. Otherwise times snap to the grid set in Settings. Hold ⌥ to place to the minute.
@@ -50,6 +50,7 @@ cd ur && ./install.sh
 
 | Keys | Action |
 |---|---|
+| ⌘↩ | Stop the timer, or resume the last entry (the big round button) |
 | ⌘1 – ⌘9 | Start or stop project 1–9 (order set in Projects) |
 | ⌘K / ⌃⌥Space | Command bar / command bar from anywhere |
 | ⌘. | Stop timer |

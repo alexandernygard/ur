@@ -90,9 +90,12 @@ struct DayHero: View {
             let now = ctx.date
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        clock(now)
-                        status(now)
+                    HStack(alignment: .center, spacing: 20) {
+                        if day.isToday { TimerButton() }
+                        VStack(alignment: .leading, spacing: 6) {
+                            clock(now)
+                            status(now)
+                        }
                     }
                     Spacer(minLength: 16)
                     DayBookends(day: day, now: now)
@@ -129,19 +132,78 @@ struct DayHero: View {
                 Text(store.name(r.projectID)).font(.title3.weight(.semibold))
                 Text("since \(Fmt.time(r.start))").foregroundStyle(Theme.inkSoft)
                 RunningNote(entry: r)
-                Button("Stop") { store.stop() }
-                    .help("Stop (⌘.)")
             }
         } else if day.isToday {
-            Text("Not tracking. Pick a project, press ⌘1–9, or ⌘K to search.")
-                .font(.title3)
-                .foregroundStyle(Theme.inkSoft)
+            HStack(spacing: 10) {
+                if let c = store.resumeCandidate {
+                    Text("Not tracking.").foregroundStyle(Theme.inkSoft)
+                    Text("Resume").foregroundStyle(Theme.inkSoft)
+                    Dot(color: store.color(c.projectID), size: 10)
+                    Text(store.name(c.projectID)).fontWeight(.semibold).foregroundStyle(Theme.ink)
+                    if !c.note.isEmpty { Text(c.note).foregroundStyle(Theme.inkSoft).lineLimit(1) }
+                } else {
+                    Text("Not tracking. Pick a project below, or press ⌘K to search.").foregroundStyle(Theme.inkSoft)
+                }
+            }
+            .font(.title3)
         } else {
             Text(day > now ? "Planned. Drag on the timeline or press ⌘N to plan time."
                  : "Tracked this day. Drag on the timeline or press ⌘N to add time.")
                 .font(.title3)
                 .foregroundStyle(Theme.inkSoft)
         }
+    }
+}
+
+/// The one big control: stop the running timer, or pick the last thing back up. ⌘↩ does the same.
+struct TimerButton: View {
+    @Environment(Store.self) private var store
+    @State private var hover = false
+
+    var body: some View {
+        let running = store.running
+        let color = running.map { store.color($0.projectID) } ?? Theme.gran
+        VStack(spacing: 7) {
+            Button { store.toggleTimer() } label: {
+                ZStack {
+                    Circle()
+                        .fill(color)
+                        .shadow(color: color.opacity(hover ? 0.45 : 0.25), radius: hover ? 10 : 6, y: 3)
+                    if running != nil {
+                        RoundedRectangle(cornerRadius: 4).fill(.white).frame(width: 20, height: 20)
+                    } else {
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 26, weight: .bold))
+                            .foregroundStyle(.white)
+                            .offset(x: 2)
+                    }
+                }
+                .frame(width: 68, height: 68)
+                .scaleEffect(hover ? 1.04 : 1)
+                .contentShape(Circle())
+            }
+            .buttonStyle(PressStyle())
+            .onHover { hover = $0 }
+            .animation(.easeOut(duration: 0.15), value: hover)
+            .animation(.easeOut(duration: 0.2), value: running?.id)
+            .help(help)
+            KeyHint(text: "⌘↩")
+        }
+    }
+
+    private var help: String {
+        if let r = store.running { return "Stop \(store.name(r.projectID)) (⌘↩)" }
+        if let c = store.resumeCandidate { return "Resume \(store.name(c.projectID)) (⌘↩)" }
+        return "Choose a project to start (⌘↩)"
+    }
+}
+
+/// Sinks a little while pressed.
+struct PressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
     }
 }
 

@@ -164,6 +164,7 @@ struct ShortcutsSheet: View {
 
     private let groups: [(String, [(String, String)])] = [
         ("Tracking", [
+            ("⌘↩", "Stop the timer, or resume the last entry"),
             ("⌘1 – ⌘9", "Start or stop project 1–9"),
             ("⌘K", "Command bar: start, switch, or log time"),
             ("⌃⌥Space", "Command bar from any app"),
