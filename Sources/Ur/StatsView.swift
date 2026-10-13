@@ -20,6 +20,7 @@ struct StatsView: View {
     @State private var range: StatsRange = .week
     @State private var anchor = Date()
     @State private var hoverDay: Date?
+    @State private var scope: StatsScope = .all
 
     private var interval: DateInterval { cal.dateInterval(of: range.component, for: anchor)! }
 
@@ -67,17 +68,29 @@ struct StatsView: View {
     }
 
     private func content(_ i: DateInterval, now: Date) -> some View {
-        let days = store.dayStats(from: i.start, to: min(i.end, now.startOfDay.adding(days: 1)), now: now)
+        let all = store.dayStats(from: i.start, to: min(i.end, now.startOfDay.adding(days: 1)), now: now)
+        let days = scoped(all)
         let projectIDs = orderedProjects(days)
+        let last = min(i.end.adding(days: -1), now)
         return ScrollView {
             VStack(alignment: .leading, spacing: 32) {
                 header
-                Figures(days: days, target: store.prefs.targetHours)
+                if scope == .all {
+                    Figures(days: days, target: store.prefs.targetHours)
+                } else {
+                    ScopedFigures(days: days, all: all)
+                }
                 section("Hours per \(range == .year ? "month" : "day")") {
                     hoursChart(days, projectIDs: projectIDs, now: now)
                 }
-                section("Start and end of day", note: "Amber bars run from when you started the day to when you ended it.") {
-                    spanChart(days, now: now)
+                section("Past year",
+                        note: "Each square is a day, darker the more you tracked. Below, each project by week, up to \(Fmt.dayMonth.string(from: last)).") {
+                    ActivityView(through: last, now: now, includes: includes, tint: scopeTint)
+                }
+                if scope == .all {
+                    section("Start and end of day", note: "Amber bars run from when you started the day to when you ended it.") {
+                        spanChart(days, now: now)
+                    }
                 }
                 HStack(alignment: .top, spacing: 32) {
                     section("By project") { ProjectTable(days: days) }
@@ -94,9 +107,69 @@ struct StatsView: View {
     }
 
     private var header: some View {
-        Text(title)
-            .font(.system(size: 34, weight: .light).width(.compressed))
-            .foregroundStyle(Theme.ink)
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.system(size: 34, weight: .light).width(.compressed))
+                .foregroundStyle(Theme.ink)
+            Spacer()
+            scopePicker
+        }
+    }
+
+    // MARK: Scope
+
+    private var scopePicker: some View {
+        let groups = store.data.groups.filter { g in store.data.projects.contains { $0.groupID == g.id } }
+        let loose = store.data.projects.filter { store.group($0.groupID) == nil }
+        return Picker("Show", selection: $scope) {
+            Text("All projects").tag(StatsScope.all)
+            if !groups.isEmpty {
+                Divider()
+                ForEach(groups) { g in Text(g.name).tag(StatsScope.group(g.id)) }
+                if !loose.isEmpty { Text("Not in a group").tag(StatsScope.ungrouped) }
+            }
+            Divider()
+            ForEach(store.sections(store.data.projects).flatMap(\.projects)) { p in
+                Text(p.archived ? "\(p.name) (archived)" : p.name).tag(StatsScope.project(p.id))
+            }
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+        .onChange(of: store.data.groups) { if !valid(scope) { scope = .all } }
+        .onChange(of: store.data.projects) { if !valid(scope) { scope = .all } }
+    }
+
+    /// A group or project that was deleted falls back to everything.
+    private func valid(_ s: StatsScope) -> Bool {
+        switch s {
+        case .all, .ungrouped: true
+        case .group(let id): store.group(id) != nil
+        case .project(let id): store.project(id) != nil
+        }
+    }
+
+    private func includes(_ id: UUID) -> Bool {
+        switch scope {
+        case .all: return true
+        case .group(let g): return store.project(id)?.groupID == g
+        case .ungrouped: return store.group(store.project(id)?.groupID) == nil
+        case .project(let p): return id == p
+        }
+    }
+
+    private var scopeTint: Color {
+        if case .project(let id) = scope { return store.color(id) }
+        return Theme.gran
+    }
+
+    private func scoped(_ days: [DayStat]) -> [DayStat] {
+        guard scope != .all else { return days }
+        return days.map { d in
+            var d = d
+            d.perProject = d.perProject.filter { includes($0.key) }
+            d.total = d.perProject.values.reduce(0, +)
+            return d
+        }
     }
 
     private func shift(_ dir: Int) {
@@ -158,7 +231,7 @@ struct StatsView: View {
                         .foregroundStyle(by: .value("Project", b.project))
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
-                if range != .year {
+                if range != .year && scope == .all {
                     RuleMark(y: .value("Target", store.prefs.targetHours))
                         .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                         .foregroundStyle(Theme.inkSoft)
@@ -339,7 +412,7 @@ struct StatsView: View {
     private func hourOfDayChart(_ i: DateInterval, now: Date) -> some View {
         var bins = Array(repeating: 0.0, count: 24)
         let _ = {
-            for e in store.entries(from: i.start, to: i.end, now: now) {
+            for e in store.entries(from: i.start, to: i.end, now: now) where includes(e.projectID) {
                 var t = max(e.start, i.start)
                 let end = min(e.effectiveEnd(now), i.end, now)
                 while t < end {
@@ -437,6 +510,56 @@ struct Figures: View {
             Text(value)
                 .font(.system(size: 30, weight: .light).width(.condensed).monospacedDigit())
                 .foregroundStyle(amber ? Theme.molte : Theme.ink)
+            Text(label).font(.callout).foregroundStyle(Theme.inkSoft)
+            if let detail { Text(detail).font(.caption).foregroundStyle(Theme.inkSoft) }
+        }
+        .fixedSize()
+    }
+}
+
+/// Figures for a group or a single project. The work day's start and end belong to the
+/// whole day, not to one project, so those give way to share and busiest day.
+struct ScopedFigures: View {
+    @Environment(Store.self) private var store
+    let days: [DayStat]
+    let all: [DayStat]
+
+    var body: some View {
+        let total = days.reduce(0) { $0 + $1.total }
+        let allTotal = all.reduce(0) { $0 + $1.total }
+        let active = days.filter { $0.total >= 60 }
+        let busiest = days.max { $0.total < $1.total }
+        let per = days.reduce(into: [UUID: TimeInterval]()) { acc, d in for (k, v) in d.perProject { acc[k, default: 0] += v } }
+        let top = per.max { $0.value < $1.value }
+
+        HStack(alignment: .top, spacing: 0) {
+            figure(Fmt.hmm(total), "tracked", detail: active.isEmpty ? nil : "\(Fmt.dur(total / Double(active.count))) per day with time")
+            divider
+            figure("\(active.count)", active.count == 1 ? "day with time" : "days with time")
+            divider
+            figure(allTotal > 0 ? "\(Int((total / allTotal * 100).rounded()))%" : "–", "of all tracked time",
+                   detail: allTotal > 0 ? "of \(Fmt.dur(allTotal))" : nil)
+            divider
+            figure(busiest.map { $0.total >= 60 ? Fmt.hmm($0.total) : "–" } ?? "–", "busiest day",
+                   detail: busiest.flatMap { $0.total >= 60 ? Fmt.dayTitle.string(from: $0.day) : nil })
+            if per.count > 1, let top {
+                divider
+                figure(Fmt.hmm(top.value), "most on \(store.name(top.key))",
+                       detail: "\(Int((top.value / max(total, 1) * 100).rounded()))% of the time shown")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var divider: some View {
+        Rectangle().fill(Theme.line).frame(width: 1, height: 52).padding(.horizontal, 20)
+    }
+
+    private func figure(_ value: String, _ label: String, detail: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(size: 30, weight: .light).width(.condensed).monospacedDigit())
+                .foregroundStyle(Theme.ink)
             Text(label).font(.callout).foregroundStyle(Theme.inkSoft)
             if let detail { Text(detail).font(.caption).foregroundStyle(Theme.inkSoft) }
         }
