@@ -38,7 +38,8 @@ cd ur && ./install.sh
 - **Undo** anything with ⌘Z: moves, resizes, deletes, starting and stopping, and changes to the day.
 - **Snap into place**: while you drag, a block's edges snap to the edges of other blocks, the start and end of the day, and the current time, and a green guide line shows what it snapped to. Otherwise times snap to the grid set in Settings. Hold ⌥ to place to the minute.
 - **Zoom** the calendar by pinching, or with ⌘+, ⌘− and ⌘0. The time under your fingers stays put.
-- **Resume** an entry with the play button that appears when you hover a block, from its right-click menu, or with ⌘R (the selected entry, or the last one). If it's the last thing you did today, its menu also offers *Resume from 14:30*, which continues the same block and counts the break.
+- **Resume** an entry with the play button that appears when you hover a block, from its right-click menu, or with ⌘R (the selected entry, or the last one). If it's the last thing you did today, a second button (⏩) continues the same block from where you left off, so the break counts as that activity too.
+- **Move around with the keyboard**: ↑ and ↓ select the previous and next entry, ← and → jump to the neighbouring day, ↩ resumes the selected entry, ⇧↩ continues it counting the break, and Esc clears the selection.
 - **Plan the future** by adding entries later in the day. They appear dashed and don't count as tracked until the time has passed.
 - **Command bar** (⌘K, or ⌃⌥Space from any app):
   - `design` starts Design
@@ -57,6 +58,8 @@ cd ur && ./install.sh
 | ⌘R | Resume the selected entry, or the last one |
 | ⌘D | Start / end / resume the work day |
 | ⌘N | Add time |
+| ↑ ↓, ← → | Select the previous or next entry, or one on the neighbouring day |
+| ↩, ⇧↩ | Resume the selected entry; continue it, counting the break |
 | ⌘E | Edit selected or running entry |
 | ⌘⌫ | Delete selected entry |
 | ⌘Z, ⇧⌘Z | Undo, redo |

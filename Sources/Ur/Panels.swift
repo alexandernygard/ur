@@ -174,6 +174,10 @@ struct ShortcutsSheet: View {
         ]),
         ("Entries", [
             ("⌘N", "Add time"),
+            ("↑  ↓", "Select the previous or next entry"),
+            ("←  →", "Select an entry on the day before or after"),
+            ("↩", "Resume the selected entry now"),
+            ("⇧↩", "Continue the last entry, counting the break"),
             ("⌘E", "Edit the selected or running entry"),
             ("⌘⌫", "Delete the selected entry"),
             ("⌘Z  ⇧⌘Z", "Undo and redo any change"),

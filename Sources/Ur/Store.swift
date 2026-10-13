@@ -469,6 +469,59 @@ final class Store {
         }
     }
 
+    // MARK: Keyboard selection
+
+    /// ↑ and ↓ step through entries in time order, across days. With nothing selected, ↑ picks
+    /// the last thing you did and ↓ the first entry on screen.
+    func selectAdjacentEntry(_ dir: Int) {
+        let now = Date()
+        let all = data.entries.sorted { ($0.start, $0.effectiveEnd(now)) < ($1.start, $1.effectiveEnd(now)) }
+        guard !all.isEmpty else { return }
+        let next: Entry?
+        if let id = selectedEntryID, let i = all.firstIndex(where: { $0.id == id }) {
+            let j = i + dir
+            next = all.indices.contains(j) ? all[j] : nil
+        } else {
+            let shown = visibleDays.flatMap { entries(on: $0) }.sorted { $0.start < $1.start }
+            if dir < 0 {
+                next = shown.last { $0.start <= now } ?? shown.last ?? all.last { $0.start <= now }
+            } else {
+                next = shown.first ?? all.first { $0.start >= selectedDay } ?? all.last
+            }
+        }
+        if let next { selectEntry(next) }
+    }
+
+    /// ← and → move to the entry on the previous or next day nearest the same time of day,
+    /// skipping days with nothing on them.
+    func selectEntryOnAdjacentDay(_ dir: Int) {
+        let now = Date()
+        let from = data.entries.first { $0.id == selectedEntryID }
+        let day = from?.start.startOfDay ?? selectedDay
+        let time = from?.start.hoursIntoDay ?? (day.isToday ? now.hoursIntoDay : 9)
+        for k in 1...60 {
+            let d = day.adding(days: dir * k)
+            let candidates = entries(on: d)
+            if let best = candidates.min(by: { abs($0.start.hoursIntoDay - time) < abs($1.start.hoursIntoDay - time) }) {
+                selectEntry(best)
+                return
+            }
+        }
+    }
+
+    /// Selects the entry and brings its day into view.
+    private func selectEntry(_ x: Entry) {
+        selectedEntryID = x.id
+        let d = x.start.startOfDay
+        if !visibleDays.contains(d) { selectedDay = d }
+    }
+
+    /// Return on the calendar: pick the selected entry back up. A running one opens in the editor.
+    func returnOnSelection() {
+        guard let id = selectedEntryID, let x = data.entries.first(where: { $0.id == id }) else { return }
+        if x.isRunning { edit(id) } else { resume(id) }
+    }
+
     /// Starts a new timer on the entry's project, with its note.
     func resume(_ id: UUID) {
         guard let x = data.entries.first(where: { $0.id == id }) else { return }

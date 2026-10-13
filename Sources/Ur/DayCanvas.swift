@@ -468,13 +468,80 @@ struct CalendarCanvas: View {
         cancelled = false
     }
 
+    /// Esc cancels a drag. Otherwise the arrow keys move the selection between entries
+    /// (↑↓ in time order, ←→ to the neighbouring day), Return picks the selected one back up,
+    /// and Esc clears the selection.
     private func installEscape() {
         guard escMonitor == nil else { return }
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.keyCode == 53, adjust != nil || draft != nil || bound != nil else { return event }
-            adjust = nil; draft = nil; bound = nil; guide = nil
-            cancelled = true
+            let dragging = adjust != nil || draft != nil || bound != nil
+            if event.keyCode == 53 && dragging {
+                adjust = nil; draft = nil; bound = nil; guide = nil
+                cancelled = true
+                return nil
+            }
+            guard !dragging, store.pane == .today, !store.isModal, !store.isTyping,
+                  event.window != nil, event.window === scroller.view?.window,
+                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty
+            else { return event }
+            let shift = event.modifierFlags.contains(.shift)
+            if shift && ![36, 76].contains(event.keyCode) { return event }
+            switch event.keyCode {
+            case 126: store.selectAdjacentEntry(-1)
+            case 125: store.selectAdjacentEntry(1)
+            case 123: store.selectEntryOnAdjacentDay(-1)
+            case 124: store.selectEntryOnAdjacentDay(1)
+            case 36, 76:
+                guard let id = store.selectedEntryID else { return event }
+                if shift {
+                    guard store.canContinue(id) else { NSSound.beep(); return nil }
+                    store.continueEntry(id)
+                } else {
+                    store.returnOnSelection()
+                }
+                return nil
+            case 53:
+                guard store.selectedEntryID != nil else { return event }
+                store.selectedEntryID = nil
+                return nil
+            default: return event
+            }
+            revealSelection()
             return nil
+        }
+    }
+
+    /// Scrolls just enough to show the selected entry, if it's off screen.
+    private func revealSelection() {
+        DispatchQueue.main.async {
+            guard let id = store.selectedEntryID, let x = store.data.entries.first(where: { $0.id == id }),
+                  let sv = scroller.view, let doc = sv.documentView else { return }
+            let day = x.start.startOfDay
+            let startH = x.start.timeIntervalSince(day) / 3600
+            let endH = min(24, x.effectiveEnd().timeIntervalSince(day) / 3600)
+            let top = pad + CGFloat(startH) * hourH
+            let bottom = pad + CGFloat(max(endH, startH + 0.25)) * hourH
+            let visible = sv.contentView.bounds
+            let docH = doc.bounds.height
+            let flipped = doc.isFlipped
+            let shownTop = flipped ? visible.minY : docH - visible.maxY
+            let margin: CGFloat = 40
+            var newTop = shownTop
+            if top - margin < shownTop {
+                newTop = top - margin
+            } else if bottom + margin > shownTop + visible.height {
+                // Tall blocks keep their start in view.
+                newTop = min(top - margin, bottom + margin - visible.height)
+            } else {
+                return
+            }
+            newTop = min(max(0, newTop), max(0, docH - visible.height))
+            let y = flipped ? newTop : docH - newTop - visible.height
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.15
+                sv.contentView.animator().setBoundsOrigin(NSPoint(x: visible.minX, y: y))
+            }
+            sv.reflectScrolledClipView(sv.contentView)
         }
     }
 
@@ -743,7 +810,7 @@ struct EntryBlock: View {
                 .padding(.vertical, height < 30 ? 0 : 3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: height < 30 ? .leading : .topLeading)
                 .overlay(alignment: height < 30 ? .trailing : .topTrailing) {
-                    if canResume { resumeButton(color).padding(2) }
+                    if canResume { resumeButtons(color).padding(2) }
                 }
             } else {
                 VStack(alignment: .leading, spacing: 2) {
@@ -759,7 +826,7 @@ struct EntryBlock: View {
                             .foregroundStyle(entry.isRunning ? Theme.gran : Theme.inkSoft)
                             .opacity(canResume ? 0 : 1)
                             .overlay(alignment: .trailing) {
-                                if canResume { resumeButton(color) }
+                                if canResume { resumeButtons(color) }
                             }
                     }
                     if !compact && !entry.note.isEmpty {
@@ -798,17 +865,34 @@ struct EntryBlock: View {
         .help(entry.note.isEmpty ? store.name(entry.projectID) : "\(store.name(entry.projectID)): \(entry.note)")
     }
 
-    private func resumeButton(_ color: Color) -> some View {
-        Button { store.resume(entry.id) } label: {
-            Image(systemName: "play.fill")
-                .font(.system(size: 8))
-                .foregroundStyle(.white)
-                .frame(width: 18, height: 18)
-                .background(Circle().fill(color))
+    /// Play starts a new timer on this project. The last thing you did today also gets
+    /// "continue": the block carries on to now, so the break since it ended counts too.
+    private func resumeButtons(_ color: Color) -> some View {
+        HStack(spacing: 4) {
+            if let end = entry.end, store.canContinue(entry.id) {
+                Button { store.continueEntry(entry.id) } label: {
+                    Image(systemName: "forward.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(color)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(Theme.raised))
+                        .overlay(Circle().strokeBorder(color, lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
+                .cursor(.arrow)
+                .help("Continue from \(Fmt.time(end)): the time since then counts as \(store.name(entry.projectID)) (⇧↩)")
+            }
+            Button { store.resume(entry.id) } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(color))
+            }
+            .buttonStyle(.plain)
+            .cursor(.arrow)
+            .help("Resume \(store.name(entry.projectID)) now (↩)")
         }
-        .buttonStyle(.plain)
-        .cursor(.arrow)
-        .help("Resume \(store.name(entry.projectID)) now")
     }
 
     private func timeLabel(planned: Bool, duration: TimeInterval) -> String {
