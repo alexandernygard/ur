@@ -54,6 +54,7 @@ struct CommandPalette: View {
                             ForEach(Array(items.enumerated()), id: \.offset) { i, item in
                                 row(item, selected: i == index)
                                     .id(i)
+                                    .onHover { if $0 { index = i } }
                                     .onTapGesture { item.run(); close() }
                             }
                         }
@@ -118,6 +119,7 @@ struct CommandPalette: View {
     /// Arrow keys and Escape are caught before the text field sees them.
     private func installKeys() {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard store.showPalette, store.editing == nil else { return event }
             switch event.keyCode {
             case 125: index = min(index + 1, max(0, results().count - 1)); return nil
             case 126: index = max(0, index - 1); return nil
@@ -149,7 +151,7 @@ struct CommandPalette: View {
     private func run(_ items: [Item]) {
         let q = query.trimmingCharacters(in: .whitespaces)
         if items.isEmpty {
-            if !q.isEmpty { store.start(store.addProject(q).id) }
+            if !q.isEmpty { createAndRun(parse(q)) }
         } else {
             items[min(index, items.count - 1)].run()
         }
@@ -189,13 +191,7 @@ struct CommandPalette: View {
     }
 
     private func durationSlot(_ seconds: TimeInterval) -> (Date, Date) {
-        let day = targetDay
-        if day.isToday {
-            let end = Date().snapped(to: store.prefs.snapMinutes)
-            return (end.addingTimeInterval(-seconds), end)
-        }
-        let start = store.entries(on: day).last?.end ?? store.workday(day)?.start ?? day.at(hour: 9, minute: 0)
-        return (start, start.addingTimeInterval(seconds))
+        store.slot(lasting: seconds, on: targetDay)
     }
 
     private func results() -> [Item] {
@@ -240,7 +236,6 @@ struct CommandPalette: View {
                 items.append(Item(icon: "plus", color: color, title: "Log \(p.name)",
                                   detail: "\(Fmt.range(a, b))  \(Fmt.dur(b.timeIntervalSince(a)))  \(noteSuffix)") {
                     store.save(EntryDraft(projectID: p.id, start: a, end: b, note: note))
-                    store.selectedDay = a.startOfDay
                 })
             case .duration(let d):
                 let (a, b) = durationSlot(d)
@@ -263,8 +258,14 @@ struct CommandPalette: View {
 
         let name = parsed.project
         if !name.isEmpty && !store.data.projects.contains(where: { $0.name.lowercased() == name.lowercased() }) {
-            items.append(Item(icon: "plus.square", title: "Create project “\(name)”", detail: "and start it") {
-                store.start(store.addProject(name).id, note: parsed.note)
+            let detail: String
+            switch parsed.when {
+            case .now: detail = "and start it"
+            case .range(let a, let b): detail = "and log \(Fmt.range(a, b))"
+            case .duration(let d): detail = "and log \(Fmt.dur(d))"
+            }
+            items.append(Item(icon: "plus.square", title: "Create project “\(name)”", detail: detail) {
+                createAndRun(parsed)
             })
         }
 
@@ -272,6 +273,19 @@ struct CommandPalette: View {
             items += commands().filter { raw.isEmpty || Fuzzy.score($0.title, raw) >= 40 }
         }
         return items
+    }
+
+    /// A new project, started now or given the time that was typed.
+    private func createAndRun(_ parsed: (project: String, note: String, when: When)) {
+        guard !parsed.project.isEmpty else { return }
+        let p = store.addProject(parsed.project)
+        switch parsed.when {
+        case .now: store.start(p.id, note: parsed.note)
+        case .range(let a, let b): store.save(EntryDraft(projectID: p.id, start: a, end: b, note: parsed.note))
+        case .duration(let d):
+            let (a, b) = durationSlot(d)
+            store.save(EntryDraft(projectID: p.id, start: a, end: b, note: parsed.note))
+        }
     }
 
     /// Matches the project name, or the group and project together ("northwind redesign").

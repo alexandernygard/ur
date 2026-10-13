@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let store = Store.shared
             NSApp.activate(ignoringOtherApps: true)
             store.openMainWindow?()
-            store.showPalette = true
+            if store.editing == nil && !store.showShortcuts { store.showPalette = true }
         }
     }
 
@@ -79,20 +79,21 @@ struct UrCommands: Commands {
             Button("Add Time…") { store.newEntry() }
                 .keyboardShortcut("n")
                 .disabled(store.isModal)
-            Button("New Project") { store.pane = .projects; NotificationCenter.default.post(name: .focusNewProject, object: nil) }
+            Button("New Project") { store.askForNewProject() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
         }
 
         CommandMenu("Track") {
             Button("Command Bar…") { store.showPalette.toggle() }
                 .keyboardShortcut("k")
+                .disabled(store.editing != nil || store.showShortcuts)
             Divider()
             Button(store.dayToggleTitle) { store.toggleDay() }
                 .keyboardShortcut("d")
                 .disabled(store.isModal)
             Button("Stop Timer") { store.stop() }
                 .keyboardShortcut(".")
-                .disabled(store.running == nil)
+                .disabled(store.isModal || store.running == nil)
             Button(store.selectedEntryID != nil && store.selectedEntryID != store.running?.id ? "Resume Selected" : "Resume Last") {
                 store.resumeSelectedOrLast()
             }
@@ -108,9 +109,16 @@ struct UrCommands: Commands {
             Button("Edit Entry…") { store.editSelectedOrRunning() }
                 .keyboardShortcut("e")
                 .disabled(store.isModal || (store.selectedEntryID == nil && store.running == nil))
-            Button("Delete Entry") { store.deleteSelected() }
+            Button("Delete Entry") {
+                // ⌘⌫ in a text field deletes to the start of the line, as everywhere else on the Mac.
+                if store.isTyping {
+                    NSApp.sendAction(#selector(NSResponder.deleteToBeginningOfLine(_:)), to: nil, from: nil)
+                } else {
+                    store.deleteSelected()
+                }
+            }
                 .keyboardShortcut(.delete, modifiers: .command)
-                .disabled(store.isModal || store.selectedEntryID == nil || store.pane == .projects)
+                .disabled(store.isModal || store.selectedEntryID == nil || store.pane != .today)
         }
 
         CommandGroup(after: .toolbar) {
@@ -150,6 +158,5 @@ struct UrCommands: Commands {
 }
 
 extension Notification.Name {
-    static let focusNewProject = Notification.Name("ur.focusNewProject")
     static let newGroup = Notification.Name("ur.newGroup")
 }

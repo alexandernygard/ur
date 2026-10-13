@@ -26,6 +26,12 @@ extension Date {
             .addingTimeInterval(hour >= 24 ? 3600 : 0)
     }
 
+    func floored(to minutes: Int) -> Date {
+        let s = Double(max(1, minutes) * 60)
+        let local = timeIntervalSince(startOfDay)
+        return startOfDay.addingTimeInterval((local / s).rounded(.down) * s)
+    }
+
     func snapped(to minutes: Int) -> Date {
         let s = Double(max(1, minutes) * 60)
         let local = timeIntervalSince(startOfDay)
@@ -99,7 +105,7 @@ enum TimeParse {
     struct Duration { var span: Swift.Range<String.Index>; var seconds: TimeInterval }
 
     private static let rangeRx = try! NSRegularExpression(
-        pattern: #"(?<![\d:.])(\d{1,2})(?:[:.]?(\d{2}))?\s*[-–]\s*(\d{1,2})(?:[:.]?(\d{2}))?(?![\d])"#)
+        pattern: #"(?<![\w:.])(\d{1,2})(?:[:.]?(\d{2}))?\s*[-–]\s*(\d{1,2})(?:[:.]?(\d{2}))?(?![:\d]|\.\d)"#)
     private static let durRx = try! NSRegularExpression(
         pattern: #"(?<![\w:.])(?:(\d+(?:[.,]\d+)?)\s*h(?:\s*(\d{1,2})\s*m?)?|(\d+)\s*m(?:in)?)(?![\w])"#,
         options: [.caseInsensitive])
@@ -114,9 +120,20 @@ enum TimeParse {
     static func range(in s: String) -> Range? {
         let ns = NSRange(s.startIndex..., in: s)
         guard let m = rangeRx.firstMatch(in: s, range: ns), let span = Swift.Range(m.range, in: s) else { return nil }
-        let h1 = Int(group(m, 1, in: s)!)!, m1 = Int(group(m, 2, in: s) ?? "0")!
-        let h2 = Int(group(m, 3, in: s)!)!, m2 = Int(group(m, 4, in: s) ?? "0")!
+        var h1 = Int(group(m, 1, in: s)!)!, m1 = Int(group(m, 2, in: s) ?? "0")!
+        var h2 = Int(group(m, 3, in: s)!)!, m2 = Int(group(m, 4, in: s) ?? "0")!
         guard valid(h1, m1), valid(h2, m2) else { return nil }
+        // Nobody logs work at 2–4 in the night: a start of 1–6 means the afternoon,
+        // unless written as 24-hour time with a leading zero ("01:00").
+        let padded = group(m, 1, in: s)!.hasPrefix("0") || group(m, 3, in: s)!.hasPrefix("0")
+        if !padded {
+            if (1...6).contains(h1) {
+                h1 += 12
+                if h2 < 12 && h2 + 12 > h1 { h2 += 12 }
+            } else if (7...12).contains(h1) && (1...6).contains(h2) {
+                h2 += 12
+            }
+        }
         return Range(span: span, start: (h1, m1), end: (h2, m2))
     }
 

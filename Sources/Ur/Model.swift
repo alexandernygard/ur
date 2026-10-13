@@ -85,7 +85,7 @@ struct Preferences: Codable, Hashable {
     }
 }
 
-struct AppData: Codable {
+struct AppData: Codable, Equatable {
     var groups: [ProjectGroup] = []
     var projects: [Project] = []
     var entries: [Entry] = []

@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(Store.self) private var store
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         @Bindable var store = store
@@ -35,7 +36,9 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.12), value: store.showPalette)
         .onAppear {
             store.openMainWindow = { openWindow(id: "main") }
+            store.undoManager = undoManager
         }
+        .onChange(of: undoManager) { store.undoManager = undoManager }
     }
 }
 

@@ -84,7 +84,10 @@ final class Store {
     var data: AppData { didSet { scheduleSave() } }
 
     // UI state
-    var pane: Pane = .today
+    var pane: Pane = .today {
+        // ⌘E and ⌘⌫ act on the selection, so it shouldn't outlive the calendar.
+        didSet { if pane != oldValue && pane != .today { selectedEntryID = nil } }
+    }
     var selectedDay = Date().startOfDay
     var span: Span = Span(rawValue: UserDefaults.standard.string(forKey: "span") ?? "") ?? .day {
         didSet { UserDefaults.standard.set(span.rawValue, forKey: "span") }
@@ -93,9 +96,14 @@ final class Store {
     var editing: EntryDraft?
     var showPalette = false
     var showShortcuts = false
+    /// Set when "New Project" is chosen, so the Projects page focuses its name field once shown.
+    var wantsNewProject = false
     var tick = Date()
 
     @ObservationIgnored var openMainWindow: (() -> Void)?
+    /// The main window's undo manager, so ⌘Z works on entries and the work day.
+    @ObservationIgnored weak var undoManager: UndoManager?
+    @ObservationIgnored private var undoDepth = 0
     @ObservationIgnored private var saveWork: DispatchWorkItem?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var lastDayKey = Date().dayKey
@@ -141,6 +149,35 @@ final class Store {
         Persistence.save(data)
     }
 
+    // MARK: Undo
+
+    /// Runs a change as one undo step, named as it appears in the Edit menu ("Undo Move Entry").
+    /// Nested calls fold into the outermost one.
+    func undoable(_ name: String, _ body: () -> Void) {
+        let outer = undoDepth == 0
+        let before = data
+        undoDepth += 1
+        body()
+        undoDepth -= 1
+        guard outer, data != before else { return }
+        registerUndo(restoring: before, name)
+    }
+
+    private func registerUndo(restoring snapshot: AppData, _ name: String) {
+        guard let um = undoManager else { return }
+        um.registerUndo(withTarget: self) { store in
+            let current = store.data
+            store.registerUndo(restoring: current, name)
+            // Undo is about time: entries and work days. Projects and settings stay as they are now.
+            var restored = current
+            restored.entries = snapshot.entries
+            restored.days = snapshot.days
+            store.data = restored
+            if let id = store.selectedEntryID, !restored.entries.contains(where: { $0.id == id }) { store.selectedEntryID = nil }
+        }
+        um.setActionName(name)
+    }
+
     // MARK: Lookup
 
     var activeProjects: [Project] { data.projects.filter { !$0.archived } }
@@ -155,7 +192,20 @@ final class Store {
         return Theme.project(p.colorIndex)
     }
 
-    func name(_ id: UUID?) -> String { project(id)?.name ?? "Unknown project" }
+    func name(_ id: UUID?) -> String {
+        guard let p = project(id) else { return "Unknown project" }
+        let n = p.name.trimmingCharacters(in: .whitespaces)
+        return n.isEmpty ? "Untitled project" : n
+    }
+
+    /// Opens Projects with the new-project field focused.
+    func askForNewProject() {
+        pane = .projects
+        wantsNewProject = true
+    }
+
+    /// True while a text field is being typed in, so editing keys like ⌘⌫ go to the text.
+    var isTyping: Bool { NSApp.keyWindow?.firstResponder is NSTextView }
 
     var running: Entry? { data.entries.first { $0.end == nil } }
 
@@ -189,7 +239,34 @@ final class Store {
 
     // MARK: Work day
 
-    func workday(_ day: Date) -> WorkDay? { data.days[day.dayKey] }
+    /// What was set by hand: Start Day, End Day, or dragging the amber lines.
+    func recordedDay(_ day: Date) -> WorkDay? { data.days[day.dayKey] }
+
+    /// Earliest start and latest end of the time already under way on a day (plans don't count).
+    func worked(_ day: Date, now: Date = .now) -> (start: Date, end: Date)? {
+        let ds = day.startOfDay, de = ds.adding(days: 1)
+        let es = data.entries.filter { $0.start >= ds && $0.start < de && $0.start <= now }
+        guard let first = es.map(\.start).min(), let last = es.map({ min($0.effectiveEnd(now), now) }).max() else { return nil }
+        return (first, last)
+    }
+
+    /// The work day as it should be shown: what was set by hand, widened to cover every entry
+    /// that has started. A day with entries but nothing set starts with its first entry, and a
+    /// past one ends with its last.
+    func workday(_ day: Date, now: Date = .now) -> WorkDay? {
+        let rec = recordedDay(day)
+        guard let span = worked(day, now: now) else { return rec }
+        // With automatic start turned off, today begins only when you say so.
+        if day.isToday && !prefs.autoStartDay && rec?.start == nil { return rec }
+        var w = rec ?? WorkDay(key: day.dayKey)
+        w.start = min(w.start ?? span.start, span.start)
+        if let e = w.end {
+            w.end = max(e, span.end)
+        } else if !day.isToday {
+            w.end = span.end
+        }
+        return w
+    }
 
     func dayState(_ day: Date) -> DayState {
         guard let w = workday(day), let s = w.start else { return .notStarted }
@@ -198,24 +275,34 @@ final class Store {
     }
 
     func startDay(at t: Date = .now) {
+        undoable("Start Day") { recordStart(t) }
+    }
+
+    private func recordStart(_ t: Date) {
         let k = t.dayKey
         var w = data.days[k] ?? WorkDay(key: k)
-        if w.start == nil { w.start = t }
+        if w.start == nil { w.start = min(t, worked(t)?.start ?? t) }
         w.end = nil
         data.days[k] = w
     }
 
     func endDay(at t: Date = .now) {
-        stop(at: t)
-        let k = t.dayKey
-        var w = data.days[k] ?? WorkDay(key: k)
-        if w.start == nil { w.start = entries(on: t).first?.start ?? t }
-        w.end = t
-        data.days[k] = w
+        undoable("End Day") {
+            stop(at: t)
+            let k = t.dayKey
+            var w = data.days[k] ?? WorkDay(key: k)
+            if w.start == nil { w.start = worked(t)?.start ?? t }
+            w.end = t
+            data.days[k] = w
+        }
     }
 
     func resumeDay() {
-        data.days[Date().dayKey]?.end = nil
+        undoable("Resume Day") {
+            let k = Date().dayKey
+            if data.days[k]?.start == nil { data.days[k]?.start = worked(.now)?.start }
+            data.days[k]?.end = nil
+        }
     }
 
     /// ⌘D: start the day, end it, or resume it if it was ended by mistake.
@@ -236,6 +323,10 @@ final class Store {
     }
 
     func setDayBounds(_ day: Date, start: Date?, end: Date?) {
+        undoable("Change Work Day") { recordBounds(day, start: start, end: end) }
+    }
+
+    private func recordBounds(_ day: Date, start: Date?, end: Date?) {
         let k = day.dayKey
         var w = data.days[k] ?? WorkDay(key: k)
         w.start = start
@@ -243,15 +334,14 @@ final class Store {
         if w.start == nil && w.end == nil { data.days[k] = nil } else { data.days[k] = w }
     }
 
-    /// Start of the work day and its end (or now / last entry if still open).
+    func setDayStart(_ day: Date, _ t: Date?) { setDayBounds(day, start: t, end: recordedDay(day)?.end) }
+    func setDayEnd(_ day: Date, _ t: Date?) { setDayBounds(day, start: recordedDay(day)?.start, end: t) }
+
+    /// Start of the work day and its end (or now, if today and still open).
     func dayBounds(_ day: Date, now: Date = .now) -> (start: Date, end: Date)? {
-        let w = workday(day)
-        let es = entries(on: day, now: now).filter { $0.start <= now }
-        guard let s = w?.start ?? es.first?.start else { return nil }
-        let e: Date
-        if let end = w?.end { e = end } else if day.isToday { e = now } else {
-            e = es.map { $0.effectiveEnd(now) }.max() ?? s
-        }
+        let w = workday(day, now: now)
+        guard let s = w?.start else { return nil }
+        let e = w?.end ?? (day.isToday ? now : worked(day, now: now)?.end ?? s)
         return e > s ? (s, e) : nil
     }
 
@@ -272,6 +362,10 @@ final class Store {
     // MARK: Tracking
 
     func start(_ projectID: UUID, note: String = "") {
+        undoable("Start \(name(projectID))") { begin(projectID, note: note) }
+    }
+
+    private func begin(_ projectID: UUID, note: String) {
         let t = Date()
         stop(at: t)
         wakeDay(t)
@@ -287,7 +381,7 @@ final class Store {
     /// A timer starting means the day is on, unless that's switched off in Settings.
     private func wakeDay(_ t: Date) {
         guard prefs.autoStartDay else { return }
-        if workday(t)?.start == nil { startDay(at: t) } else if workday(t)?.end != nil { resumeDay() }
+        if recordedDay(t)?.start == nil { recordStart(t) } else if recordedDay(t)?.end != nil { data.days[t.dayKey]?.end = nil }
     }
 
     /// A running timer owns the time it covers: plans it runs into are pushed back as it goes,
@@ -310,11 +404,16 @@ final class Store {
 
     func stop(at t: Date = .now) {
         guard let i = data.entries.firstIndex(where: { $0.end == nil }) else { return }
-        // Switching within half a minute is treated as a correction, not time spent.
-        if t.timeIntervalSince(data.entries[i].start) < 30 {
-            data.entries.remove(at: i)
-        } else {
-            data.entries[i].end = t
+        undoable("Stop Timer") {
+            let start = data.entries[i].start
+            // Switching within half a minute is treated as a correction, not time spent.
+            // Stopping at a chosen time never throws the entry away.
+            let live = abs(t.timeIntervalSinceNow) < 5
+            if live && t.timeIntervalSince(start) < 30 {
+                data.entries.remove(at: i)
+            } else {
+                data.entries[i].end = live ? t : max(t, start.addingTimeInterval(60))
+            }
         }
     }
 
@@ -330,7 +429,7 @@ final class Store {
 
     func resumeLast() {
         let now = Date()
-        guard let last = data.entries.filter({ $0.end != nil && $0.start <= now }).max(by: { $0.effectiveEnd() < $1.effectiveEnd() })
+        guard let last = data.entries.filter({ $0.end != nil && $0.end! <= now }).max(by: { $0.end! < $1.end! })
         else { return }
         start(last.projectID, note: last.note)
     }
@@ -361,8 +460,10 @@ final class Store {
     /// Reopens the entry so the time since it ended counts too.
     func continueEntry(_ id: UUID) {
         guard canContinue(id), let i = data.entries.firstIndex(where: { $0.id == id }) else { return }
-        wakeDay(Date())
-        data.entries[i].end = nil
+        undoable("Resume Entry") {
+            wakeDay(Date())
+            data.entries[i].end = nil
+        }
         selectedEntryID = id
     }
 
@@ -385,19 +486,51 @@ final class Store {
         var s = start, e = end
         if s == nil {
             let day = selectedDay
-            if day.isToday {
-                let last = entries(on: day).filter { $0.end != nil && $0.end! <= now }.last?.end
-                s = (last ?? now.addingTimeInterval(-3600)).snapped(to: prefs.snapMinutes)
-                e = now.snapped(to: prefs.snapMinutes)
-                if e! <= s! { e = s!.addingTimeInterval(1800) }
-            } else {
-                let last = entries(on: day).last?.end
-                s = last ?? day.at(hour: 9, minute: 0)
-                e = s!.addingTimeInterval(3600)
-            }
+            let slot = suggestedSlot(on: day, now: now)
+            s = slot.start
+            e = slot.end
         }
         editing = EntryDraft(projectID: projectID ?? running?.projectID ?? activeProjects.first?.id,
                              start: s!, end: e ?? s!.addingTimeInterval(3600))
+    }
+
+    /// Where new time most likely belongs. Today: the stretch since the last finished entry, up to
+    /// now, or up to the running timer, which is left alone. Other days: after the last entry.
+    func suggestedSlot(on day: Date, now: Date = .now) -> (start: Date, end: Date) {
+        let ds = day.startOfDay, de = ds.adding(days: 1)
+        if day.isToday {
+            let finished = data.entries.compactMap(\.end).filter { $0 >= ds && $0 <= now }
+            if let r = running {
+                let last = finished.filter { $0 <= r.start }.max()
+                if let last, r.start.timeIntervalSince(last) >= 300 { return (last, r.start) }
+                // No gap before the timer: the half hour before it, without reaching back past the last entry.
+                return (max(last ?? .distantPast, r.start.addingTimeInterval(-1800)), r.start)
+            }
+            let last = finished.max()
+            let end = max(now.floored(to: prefs.snapMinutes), last ?? .distantPast)
+            if let last, end.timeIntervalSince(last) >= 300 { return (last, end) }
+            // Nothing to fill in: offer the next half hour.
+            return (end, min(end.addingTimeInterval(1800), de))
+        }
+        var start = latestEnd(on: day) ?? workday(day)?.start ?? day.at(hour: 9, minute: 0)
+        if start >= de.addingTimeInterval(-900) { start = workday(day)?.start ?? day.at(hour: 9, minute: 0) }
+        return (start, min(start.addingTimeInterval(3600), de))
+    }
+
+    /// Where a block of `length` goes when only its length is given ("design 1h30").
+    func slot(lasting length: TimeInterval, on day: Date, now: Date = .now) -> (start: Date, end: Date) {
+        if day.isToday {
+            let end = running?.start ?? now.floored(to: prefs.snapMinutes)
+            return (end.addingTimeInterval(-length), end)
+        }
+        let de = day.startOfDay.adding(days: 1)
+        let start = min(latestEnd(on: day) ?? workday(day)?.start ?? day.at(hour: 9, minute: 0), de.addingTimeInterval(-length))
+        return (start, start.addingTimeInterval(length))
+    }
+
+    private func latestEnd(on day: Date) -> Date? {
+        let ds = day.startOfDay, de = ds.adding(days: 1)
+        return data.entries.compactMap(\.end).filter { $0 > ds && $0 <= de }.max()
     }
 
     func edit(_ id: UUID) {
@@ -419,15 +552,16 @@ final class Store {
             let xe = x.effectiveEnd(now)
             guard x.id != id, x.start < e, xe > s else { out.append(x); continue }
             if x.end == nil {
-                if x.start < s {
+                // The running timer is never thrown away: the part before the new time is kept as
+                // its own entry, and the timer carries on (same entry) from where the new time ends.
+                if x.start < s && s.timeIntervalSince(x.start) >= minimum {
                     var finished = x
+                    finished.id = UUID()
                     finished.end = s
                     out.append(finished)
-                    if e < now { out.append(Entry(projectID: x.projectID, start: e, end: nil, note: x.note)) }
-                } else if e < now {
-                    x.start = e
-                    out.append(x)
                 }
+                x.start = max(x.start, min(e, now))
+                out.append(x)
                 continue
             }
             if x.start >= s && xe <= e { continue }
@@ -447,19 +581,20 @@ final class Store {
         data.entries = out
     }
 
-    /// Time logged outside the recorded work day means the day was longer than recorded.
-    private func extendDay(_ start: Date, _ end: Date) {
-        guard end <= Date().addingTimeInterval(60) else { return }
-        let k = start.dayKey
-        guard var w = data.days[k] else { return }
-        if let s = w.start, start < s { w.start = start }
-        if let e = w.end, end > e, end.dayKey == k { w.end = end }
-        if w != data.days[k] { data.days[k] = w }
+    /// Time logged while a timer runs can't reach past now, so the timer keeps running.
+    private func clampToTimer(_ start: Date, _ end: Date?, except id: UUID?) -> Date? {
+        guard let end, let r = running, r.id != id, end > r.start, start < Date() else { return end }
+        return max(start.addingTimeInterval(60), min(end, Date()))
     }
 
     func save(_ d: EntryDraft) {
         guard let pid = d.projectID else { return }
-        let end: Date? = d.running ? nil : d.end
+        undoable(d.entryID == nil ? "Add Time" : "Edit Entry") { commitDraft(d, pid) }
+        selectedDay = d.start.startOfDay
+    }
+
+    private func commitDraft(_ d: EntryDraft, _ pid: UUID) {
+        let end: Date? = d.running ? nil : clampToTimer(d.start, d.end, except: d.entryID)
         let effectiveEnd = end ?? Date()
         guard effectiveEnd > d.start else { return }
         carve(d.start, effectiveEnd, except: d.entryID)
@@ -473,31 +608,37 @@ final class Store {
             data.entries.append(x)
             selectedEntryID = x.id
         }
-        extendDay(d.start, effectiveEnd)
     }
 
-    func setTimes(_ id: UUID, start: Date, end: Date?) {
+    func setTimes(_ id: UUID, start: Date, end: Date?, action: String = "Move Entry") {
+        let end = clampToTimer(start, end, except: id)
         let effectiveEnd = end ?? Date()
         guard effectiveEnd.timeIntervalSince(start) >= 60 else { return }
-        carve(start, effectiveEnd, except: id)
-        guard let j = data.entries.firstIndex(where: { $0.id == id }) else { return }
-        data.entries[j].start = start
-        data.entries[j].end = end
-        extendDay(start, effectiveEnd)
+        undoable(action) {
+            carve(start, effectiveEnd, except: id)
+            guard let j = data.entries.firstIndex(where: { $0.id == id }) else { return }
+            data.entries[j].start = start
+            data.entries[j].end = end
+        }
+    }
+
+    /// Entries that adding or moving time to `[s, e)` would cut into, for a warning before it happens.
+    func overlapping(_ s: Date, _ e: Date, except id: UUID?) -> [Entry] {
+        entries(from: s, to: e).filter { $0.id != id }
     }
 
     func setProject(_ entryID: UUID, _ projectID: UUID) {
         guard let i = data.entries.firstIndex(where: { $0.id == entryID }) else { return }
-        data.entries[i].projectID = projectID
+        undoable("Change Project") { data.entries[i].projectID = projectID }
     }
 
     func setNote(_ entryID: UUID, _ note: String) {
         guard let i = data.entries.firstIndex(where: { $0.id == entryID }) else { return }
-        data.entries[i].note = note
+        undoable("Edit Note") { data.entries[i].note = note }
     }
 
     func delete(_ id: UUID) {
-        data.entries.removeAll { $0.id == id }
+        undoable("Delete Entry") { data.entries.removeAll { $0.id == id } }
         if selectedEntryID == id { selectedEntryID = nil }
     }
 
@@ -520,14 +661,18 @@ final class Store {
     /// Archived projects keep their history but leave the chips, shortcuts and menus.
     func setArchived(_ id: UUID, _ archived: Bool) {
         guard let i = data.projects.firstIndex(where: { $0.id == id }) else { return }
-        if archived, running?.projectID == id { stop() }
-        data.projects[i].archived = archived
+        undoable(archived ? "Archive Project" : "Restore Project") {
+            if archived, running?.projectID == id { stop() }
+            data.projects[i].archived = archived
+        }
     }
 
     func deleteProject(_ id: UUID) {
-        if running?.projectID == id { stop() }
-        data.entries.removeAll { $0.projectID == id }
-        data.projects.removeAll { $0.id == id }
+        undoable("Delete Project") {
+            if running?.projectID == id { stop() }
+            data.entries.removeAll { $0.projectID == id }
+            data.projects.removeAll { $0.id == id }
+        }
     }
 
     // MARK: Groups
@@ -668,7 +813,8 @@ final class Store {
             for x in all where x.start < e && x.effectiveEnd(now) > d {
                 per[x.projectID, default: 0] += x.duration(from: d, to: e, now: now)
             }
-            let w = workday(d)
+            // A day still under way has no end yet.
+            let w = workday(d, now: now)
             out.append(DayStat(day: d, perProject: per.filter { $0.value > 0 },
                                total: per.values.reduce(0, +), start: w?.start, end: w?.end))
             d = e

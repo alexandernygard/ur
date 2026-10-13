@@ -56,6 +56,12 @@ struct MenuBarPanel: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 2) {
+                    if store.activeProjects.isEmpty {
+                        Text("No projects yet. Open \(Build.name) to create one.")
+                            .font(.callout)
+                            .foregroundStyle(Theme.inkSoft)
+                            .padding(.horizontal, 8)
+                    }
                     ForEach(store.sections(store.activeProjects).filter { !$0.projects.isEmpty }, id: \.group?.id) { section in
                         if let g = section.group {
                             Text(g.name)
@@ -169,9 +175,11 @@ struct ShortcutsSheet: View {
             ("⌘N", "Add time"),
             ("⌘E", "Edit the selected or running entry"),
             ("⌘⌫", "Delete the selected entry"),
+            ("⌘Z  ⇧⌘Z", "Undo and redo any change"),
             ("Drag", "On the timeline: log a new block"),
             ("Drag a block", "Move it, also to another day; drag its edges to resize"),
             ("⌥ while dragging", "Turn off snapping"),
+            ("Esc while dragging", "Put it back where it was"),
             ("Pinch  ⌘+  ⌘−  ⌘0", "Zoom the calendar"),
             ("Drag the amber line", "Change when the day started or ended"),
             ("Right-click", "Start or end the day at that time"),

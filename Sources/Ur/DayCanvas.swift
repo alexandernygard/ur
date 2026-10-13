@@ -20,6 +20,9 @@ struct CalendarCanvas: View {
     @State private var scroller = ScrollerRef()
     /// Hour height when a pinch began, and where in the viewport it is centred.
     @State private var pinch: (height: Double, y: CGFloat)?
+    /// Escape during a drag puts everything back; the rest of that drag is ignored.
+    @State private var cancelled = false
+    @State private var escMonitor: Any?
 
     struct Draft { var col: Int; var start: Date; var end: Date }
     struct Adjust { var id: UUID; var start: Date; var end: Date? }
@@ -34,6 +37,9 @@ struct CalendarCanvas: View {
         var end: Date
         var isHead: Bool
         var isTail: Bool
+        /// The whole entry's times, for its label, even when only part of it is in this column.
+        var fullStart: Date
+        var fullEnd: Date
         var id: String { "\(entry.id)-\(col)" }
     }
 
@@ -69,7 +75,8 @@ struct CalendarCanvas: View {
                             .background(ScrollerFinder(ref: scroller))
                         }
                         .simultaneousGesture(pinchGesture)
-                        .onAppear { scroll(proxy) }
+                        .onAppear { scroll(proxy); installEscape() }
+                        .onDisappear { removeEscape() }
                         .onChange(of: days) { scroll(proxy) }
                         .onChange(of: store.prefs.hourHeight) { old, new in
                             keepAnchored(from: old, to: new)
@@ -86,7 +93,7 @@ struct CalendarCanvas: View {
         var hour = starts.map { Int($0.hoursIntoDay) }.min() ?? 8
         if days.contains(where: \.isToday) { hour = min(hour, max(0, Int(Date().hoursIntoDay) - 4)) }
         let target = max(0, hour - 1)
-        DispatchQueue.main.async { proxy.scrollTo(target, anchor: .top) }
+        DispatchQueue.main.async { proxy.scrollTo("h\(target)", anchor: .top) }
     }
 
     private var hourGrid: some View {
@@ -113,7 +120,7 @@ struct CalendarCanvas: View {
                         .offset(y: -6)
                 }
                 .frame(height: hourH, alignment: .top)
-                .id(h)
+                .id("h\(h)")
             }
         }
     }
@@ -163,6 +170,8 @@ struct CalendarCanvas: View {
                 ForEach(store.gaps(day, now: now), id: \.start) { g in
                     GapBlock(start: g.start, end: g.end, compact: multi)
                         .frame(width: w, height: max(4, y(g.end, in: day) - y(g.start, in: day) - 2))
+                        .onContinuousHover(coordinateSpace: .named("calendar")) { phase in track(phase, col: i, day: day) }
+                        .contextMenu { dayMenu(i, day) }
                         .offset(x: colX(i, colW), y: y(g.start, in: day) + 1)
                         .gesture(createGesture(i, day))
                 }
@@ -172,13 +181,22 @@ struct CalendarCanvas: View {
                 bookends(i, day, colW: colW, now: now)
             }
 
+            let doomed = replaced(all, now: now)
             ForEach(segments(all, now: now)) { seg in
                 let day = days[seg.col]
-                EntryBlock(entry: seg.entry, start: seg.start, end: seg.end, now: now,
-                           selected: store.selectedEntryID == seg.entry.id, narrow: multi)
-                    .frame(width: w, height: max(14, y(seg.end, in: day) - y(seg.start, in: day) - 2))
-                    .overlay(alignment: .top) { if seg.isHead { handle(seg.entry, top: true) } }
-                    .overlay(alignment: .bottom) { if seg.isTail && !seg.entry.isRunning { handle(seg.entry, top: false) } }
+                let h = max(minBlock, y(seg.end, in: day) - y(seg.start, in: day) - 2)
+                // Short blocks keep one handle, at the end, so there's still room to grab the block itself.
+                let roomy = h >= 26
+                EntryBlock(entry: seg.entry, start: seg.fullStart, end: seg.fullEnd, height: h, now: now,
+                           selected: store.selectedEntryID == seg.entry.id, narrow: multi,
+                           dimmed: doomed.contains(seg.entry.id))
+                    .frame(width: w, height: h)
+                    .overlay(alignment: .top) {
+                        if seg.isHead && (roomy || seg.entry.isRunning) { handle(seg.entry, top: true, size: roomy ? 7 : 5) }
+                    }
+                    .overlay(alignment: .bottom) {
+                        if seg.isTail && !seg.entry.isRunning { handle(seg.entry, top: false, size: roomy ? 7 : 5) }
+                    }
                     .offset(x: colX(seg.col, colW), y: y(seg.start, in: day) + 1)
                     .gesture(moveGesture(seg.entry, colW: colW))
             }
@@ -213,6 +231,18 @@ struct CalendarCanvas: View {
         .coordinateSpace(name: "calendar")
     }
 
+    /// Blocks shorter than this are drawn at this height, so they can still be seen and grabbed.
+    private var minBlock: CGFloat { hourH < 40 ? 10 : 14 }
+
+    /// Entries that the block being dragged or drawn would replace if dropped here, shown faded.
+    private func replaced(_ all: [Entry], now: Date) -> Set<UUID> {
+        var range: (Date, Date, UUID?)?
+        if let a = adjust { range = (a.start, a.end ?? now, a.id) }
+        if let d = draft { range = (d.start, d.end, nil) }
+        guard let (s, e, id) = range else { return [] }
+        return Set(all.filter { $0.id != id && $0.start < e && $0.effectiveEnd(now) > s }.map(\.id))
+    }
+
     /// Entries as they should be drawn right now, including one being dragged.
     private func segments(_ all: [Entry], now: Date) -> [Segment] {
         var out: [Segment] = []
@@ -224,7 +254,7 @@ struct CalendarCanvas: View {
                 let ds = day.startOfDay, de = ds.adding(days: 1)
                 guard s < de && end > ds else { continue }
                 out.append(Segment(entry: e, col: i, start: max(s, ds), end: min(end, de),
-                                   isHead: s >= ds, isTail: end <= de))
+                                   isHead: s >= ds, isTail: end <= de, fullStart: s, fullEnd: end))
             }
         }
         return out
@@ -266,40 +296,55 @@ struct CalendarCanvas: View {
             store.selectedEntryID = nil
             store.selectedDay = day.startOfDay
         }
-        .onContinuousHover(coordinateSpace: .named("calendar")) { phase in
-            if case .active(let p) = phase {
-                let next = Pointer(col: i, time: date(atY: p.y, in: day))
-                if pointer != next { pointer = next }
-            }
-        }
+        .onContinuousHover(coordinateSpace: .named("calendar")) { phase in track(phase, col: i, day: day) }
         .contextMenu { dayMenu(i, day) }
         .offset(x: x)
+    }
+
+    /// Remembers the time under the pointer, for the right-click menu.
+    private func track(_ phase: HoverPhase, col: Int, day: Date) {
+        if case .active(let p) = phase {
+            let next = Pointer(col: col, time: date(atY: p.y, in: day))
+            if pointer != next { pointer = next }
+        }
     }
 
     @ViewBuilder
     private func dayMenu(_ i: Int, _ day: Date) -> some View {
         let t = pointer?.col == i ? pointer!.time : day.at(hour: 9, minute: 0)
         let w = store.workday(day)
-        let start = w?.start ?? store.dayBounds(day)?.start
+        let rec = store.recordedDay(day)
+        // The day always covers its entries, so the start can't come after the first one,
+        // and the end can't come before the last finished one.
+        let first = store.worked(day)?.start
+        let lastFinished = store.entries(on: day).filter { $0.start.startOfDay == day.startOfDay }
+            .compactMap(\.end).filter { $0 <= Date() }.max()
+        let startAt = min(t, first ?? t)
+        let endAt = max(t, lastFinished ?? t)
         Button("Add Time at \(Fmt.time(t))") {
             store.selectedDay = day.startOfDay
             store.newEntry(start: t, end: min(t.addingTimeInterval(3600), day.startOfDay.adding(days: 1)))
         }
         Divider()
-        Button("Start Day at \(Fmt.time(t))") {
-            let end = w?.end.flatMap { $0 > t ? $0 : nil }
-            store.setDayBounds(day, start: t, end: end)
+        Button("Start Day at \(Fmt.time(startAt))") {
+            store.undoable("Start Day") {
+                store.setDayStart(day, startAt)
+                if let e = rec?.end, e <= startAt { store.setDayEnd(day, nil) }
+            }
         }
-        if !(day.isToday && t > Date()) {
-            Button("End Day at \(Fmt.time(t))") {
-                if day.isToday, store.running != nil { store.stop(at: max(t, store.running!.start)) }
-                store.setDayBounds(day, start: start.flatMap { $0 < t ? $0 : nil } ?? t, end: t)
+        if !(day.isToday && endAt > Date()) && !(day.isToday && store.running.map { endAt <= $0.start } ?? false) {
+            Button("End Day at \(Fmt.time(endAt))") {
+                store.undoable("End Day") {
+                    if day.isToday, store.running != nil { store.stop(at: endAt) }
+                    if rec?.start == nil { store.setDayStart(day, min(first ?? endAt, endAt)) }
+                    store.setDayEnd(day, endAt)
+                }
             }
         }
         if w?.end != nil && day.isToday {
-            Button("Resume Day") { store.setDayBounds(day, start: w?.start, end: nil) }
+            Button("Resume Day") { store.setDayEnd(day, nil) }
         }
-        if w != nil {
+        if rec != nil {
             Button("Clear Start and End") { store.setDayBounds(day, start: nil, end: nil) }
         }
     }
@@ -309,6 +354,8 @@ struct CalendarCanvas: View {
     private func createGesture(_ col: Int, _ day: Date) -> some Gesture {
         DragGesture(minimumDistance: 4, coordinateSpace: .named("calendar"))
             .onChanged { v in
+                if cancelled && isFresh(v) { cancelled = false }
+                guard !cancelled else { return }
                 let targets = snapTargets()
                 let a = clamp(snap(rawDate(atY: v.startLocation.y, in: day), targets).time, to: day)
                 let pulled = snap(rawDate(atY: v.location.y, in: day), targets)
@@ -317,23 +364,27 @@ struct CalendarCanvas: View {
                 guide = pulled.magnet
             }
             .onEnded { _ in
-                if let d = draft, d.end.timeIntervalSince(d.start) >= 60 {
+                if !cancelled, let d = draft, d.end.timeIntervalSince(d.start) >= 60 {
                     store.selectedDay = day.startOfDay
                     store.newEntry(start: d.start, end: d.end)
                 }
-                draft = nil
-                guide = nil
+                endDrag()
             }
     }
 
+    /// Moves keep the block's own minutes and step by the snap interval, so a block at 09:03 stays
+    /// at :03 unless it lands against another block, the day's edge or now.
     private func moveGesture(_ e: Entry, colW: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 3, coordinateSpace: .named("calendar"))
+        DragGesture(minimumDistance: 4, coordinateSpace: .named("calendar"))
             .onChanged { v in
+                if cancelled && isFresh(v) { cancelled = false }
+                guard !cancelled else { return }
                 store.selectedEntryID = e.id
+                let now = Date()
                 let days = multi && !e.isRunning
                     ? column(atX: v.location.x, colW) - column(atX: v.startLocation.x, colW) : 0
-                let now = Date()
-                let raw = e.start.addingTimeInterval(delta(v.translation.height)).adding(days: days)
+                let shift = delta(v.translation.height)
+                let raw = e.start.addingTimeInterval(shift).adding(days: days)
                 let length = e.effectiveEnd(now).timeIntervalSince(e.start)
                 let targets = snapTargets(excluding: e.id)
                 // Whichever edge is nearer to something worth lining up with wins.
@@ -345,15 +396,15 @@ struct CalendarCanvas: View {
                 } else if let t = tail {
                     s = t.addingTimeInterval(-length); guide = t
                 } else {
-                    s = grid(raw); guide = nil
+                    s = e.start.addingTimeInterval(step(shift)).adding(days: days); guide = nil
                 }
                 if e.isRunning {
-                    adjust = Adjust(id: e.id, start: min(s, Date()), end: nil)
+                    adjust = Adjust(id: e.id, start: min(s, now.addingTimeInterval(-60)), end: nil)
                 } else {
                     adjust = Adjust(id: e.id, start: s, end: e.end.map { $0.addingTimeInterval(s.timeIntervalSince(e.start)) })
                 }
             }
-            .onEnded { _ in commit() }
+            .onEnded { _ in commit(e) }
     }
 
     private var pinchGesture: some Gesture {
@@ -365,16 +416,16 @@ struct CalendarCanvas: View {
             .onEnded { _ in pinch = nil }
     }
 
-    private func handle(_ e: Entry, top: Bool) -> some View {
+    private func handle(_ e: Entry, top: Bool, size: CGFloat) -> some View {
         Color.clear
-            .frame(height: 7)
+            .frame(height: size)
             .contentShape(Rectangle())
-            .onHover { inside in
-                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
-            }
+            .cursor(.resizeUpDown)
             .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .named("calendar"))
+                DragGesture(minimumDistance: 2, coordinateSpace: .named("calendar"))
                     .onChanged { v in
+                        if cancelled && isFresh(v) { cancelled = false }
+                guard !cancelled else { return }
                         store.selectedEntryID = e.id
                         let d = delta(v.translation.height)
                         let minimum = Double(store.prefs.snapMinutes * 60)
@@ -391,17 +442,45 @@ struct CalendarCanvas: View {
                             guide = pulled.magnet
                         }
                     }
-                    .onEnded { _ in commit() }
+                    .onEnded { _ in commit(e, action: "Resize Entry") }
             )
     }
 
-    private func commit() {
-        if let a = adjust {
-            store.setTimes(a.id, start: a.start, end: a.end)
-            if multi { store.selectedDay = a.start.startOfDay }
+    private func commit(_ e: Entry, action: String = "Move Entry") {
+        if !cancelled, let a = adjust, a.start != e.start || a.end != e.end {
+            store.setTimes(a.id, start: a.start, end: a.end, action: action)
+            // In the week, follow the block to the day it was dropped on, if that day is showing.
+            if multi, let d = days.first(where: { $0.startOfDay == a.start.startOfDay }) { store.selectedDay = d }
         }
+        endDrag()
+    }
+
+    /// The first moments of a new drag, after an earlier one was cancelled and never properly ended.
+    private func isFresh(_ v: DragGesture.Value) -> Bool {
+        adjust == nil && draft == nil && bound == nil && hypot(v.translation.width, v.translation.height) < 8
+    }
+
+    private func endDrag() {
         adjust = nil
+        draft = nil
+        bound = nil
         guide = nil
+        cancelled = false
+    }
+
+    private func installEscape() {
+        guard escMonitor == nil else { return }
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53, adjust != nil || draft != nil || bound != nil else { return event }
+            adjust = nil; draft = nil; bound = nil; guide = nil
+            cancelled = true
+            return nil
+        }
+    }
+
+    private func removeEscape() {
+        if let escMonitor { NSEvent.removeMonitor(escMonitor) }
+        escMonitor = nil
     }
 
     // MARK: Snapping
@@ -426,12 +505,19 @@ struct CalendarCanvas: View {
     /// The nearest target within a few points of `t`, if any.
     private func magnet(_ t: Date, _ targets: [Date]) -> Date? {
         guard !freehand else { return nil }
-        let reach = delta(8)
+        // About 8 points on screen, but never more than a couple of grid steps when zoomed far out.
+        let reach = min(delta(8), Double(store.prefs.snapMinutes * 60) * 2)
         let best = targets.min { abs($0.timeIntervalSince(t)) < abs($1.timeIntervalSince(t)) }
         return best.flatMap { abs($0.timeIntervalSince(t)) <= reach ? $0 : nil }
     }
 
     private func grid(_ t: Date) -> Date { t.snapped(to: freehand ? 1 : store.prefs.snapMinutes) }
+
+    /// A distance rounded to whole grid steps.
+    private func step(_ d: TimeInterval) -> TimeInterval {
+        let unit = Double((freehand ? 1 : store.prefs.snapMinutes) * 60)
+        return (d / unit).rounded() * unit
+    }
 
     /// Pulled to a target when one is close, otherwise to the grid.
     private func snap(_ t: Date, _ targets: [Date]) -> (time: Date, magnet: Date?) {
@@ -474,7 +560,7 @@ struct CalendarCanvas: View {
     }
 
     private func bookend(_ t: Date, isStart: Bool, col: Int, day: Date, colW: CGFloat) -> some View {
-        let strip: CGFloat = 16
+        let strip: CGFloat = 12
         let label = multi ? Fmt.time(t) : "\(isStart ? "Day started" : "Day ended") \(Fmt.time(t))"
         return VStack(spacing: 0) {
             if !isStart { Rectangle().fill(Theme.molte).frame(height: 2) }
@@ -487,38 +573,46 @@ struct CalendarCanvas: View {
         }
         .frame(width: blockW(colW) + 6, height: strip)
         .contentShape(Rectangle())
-        .onHover { inside in
-            if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
-        }
-        .gesture(boundGesture(day, isStart: isStart))
+        .cursor(.resizeUpDown)
+        .gesture(boundGesture(day, isStart: isStart, from: store.workday(day).flatMap { isStart ? $0.start : $0.end } ?? t))
         .help(isStart ? "Drag to change when the day started" : "Drag to change when the day ended")
         .offset(x: colX(col, colW) - 3, y: isStart ? y(t, in: day) - strip + 1 : y(t, in: day) - 1)
     }
 
-    private func boundGesture(_ day: Date, isStart: Bool) -> some Gesture {
-        DragGesture(minimumDistance: 1, coordinateSpace: .named("calendar"))
+    /// Moves the line by how far the pointer has moved, so grabbing it never makes it jump.
+    private func boundGesture(_ day: Date, isStart: Bool, from original: Date) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named("calendar"))
             .onChanged { v in
+                if cancelled && isFresh(v) { cancelled = false }
+                guard !cancelled else { return }
                 let w = store.workday(day)
+                let worked = store.worked(day)
                 let minimum = Double(store.prefs.snapMinutes * 60)
-                let pulled = snap(rawDate(atY: v.location.y, in: day), snapTargets(skipBoundsOf: day))
+                let pulled = snap(original.addingTimeInterval(delta(v.translation.height)), snapTargets(skipBoundsOf: day))
                 var t = clamp(pulled.time, to: day)
                 guide = pulled.magnet
+                // The day stretches to cover its entries; stop the line at the first and last one.
                 if isStart {
                     let end = w?.end ?? (day.isToday ? Date() : day.startOfDay.adding(days: 1))
-                    t = min(t, end.addingTimeInterval(-minimum))
+                    t = min(t, end.addingTimeInterval(-minimum), worked?.start ?? t)
                 } else {
                     if let s = w?.start { t = max(t, s.addingTimeInterval(minimum)) }
+                    if let last = worked?.end, store.running == nil || !day.isToday { t = max(t, last) }
                     if day.isToday { t = min(t, Date()) }
                 }
                 bound = Bound(day: day.startOfDay, isStart: isStart, time: t)
             }
             .onEnded { _ in
-                if let b = bound {
-                    let w = store.workday(day)
-                    store.setDayBounds(day, start: b.isStart ? b.time : w?.start, end: b.isStart ? w?.end : b.time)
+                if !cancelled, let b = bound, b.time != original {
+                    store.undoable("Change Work Day") {
+                        if b.isStart { store.setDayStart(day, b.time) } else {
+                            if day.isToday, let r = store.running, b.time > r.start, b.time < Date().addingTimeInterval(-60) { store.stop(at: b.time) }
+                            if store.recordedDay(day)?.start == nil { store.setDayStart(day, store.workday(day)?.start ?? b.time) }
+                            store.setDayEnd(day, b.time)
+                        }
+                    }
                 }
-                bound = nil
-                guide = nil
+                endDrag()
             }
     }
 
@@ -594,8 +688,8 @@ struct ColumnHeader: View {
             if selected { Rectangle().fill(Theme.gran).frame(height: 2) }
         }
         .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded { store.selectedDay = day.startOfDay })
         .onTapGesture(count: 2) { store.selectedDay = day.startOfDay; store.span = .day }
-        .onTapGesture { store.selectedDay = day.startOfDay }
         .help("Click to select, double-click to open the day")
     }
 
@@ -609,19 +703,25 @@ struct ColumnHeader: View {
 struct EntryBlock: View {
     @Environment(Store.self) private var store
     let entry: Entry
+    /// The whole entry's start and end (it may continue in another column).
     let start: Date
     let end: Date
+    /// Drawn height of this piece.
+    let height: CGFloat
     let now: Date
     let selected: Bool
     /// Several days side by side: put the time under the name.
     var narrow = false
+    /// Would be replaced by the block being dragged.
+    var dimmed = false
     @State private var hover = false
 
     var body: some View {
         let color = store.color(entry.projectID)
         let planned = start > now
         let duration = end.timeIntervalSince(start)
-        let compact = duration < 40 * 60
+        let compact = height < 44
+        let canResume = hover && !entry.isRunning && !planned && height >= 18
 
         HStack(spacing: 0) {
             Rectangle().fill(color).frame(width: 4)
@@ -629,19 +729,22 @@ struct EntryBlock: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(store.name(entry.projectID))
                         .font(.system(size: 11, weight: .semibold))
-                    if duration >= 30 * 60 {
+                    if height >= 30 {
                         Text(entry.isRunning ? "\(Fmt.time(start))–now" : Fmt.range(start, end))
                             .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(entry.isRunning ? Theme.gran : Theme.inkSoft)
                     }
-                    if duration >= 60 * 60 && !entry.note.isEmpty {
+                    if height >= 60 && !entry.note.isEmpty {
                         Text(entry.note).font(.system(size: 10)).foregroundStyle(Theme.inkSoft)
                     }
                 }
                 .lineLimit(1)
                 .padding(.horizontal, 5)
-                .padding(.vertical, duration < 30 * 60 ? 0 : 3)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: duration < 30 * 60 ? .leading : .topLeading)
+                .padding(.vertical, height < 30 ? 0 : 3)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: height < 30 ? .leading : .topLeading)
+                .overlay(alignment: height < 30 ? .trailing : .topTrailing) {
+                    if canResume { resumeButton(color).padding(2) }
+                }
             } else {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -654,6 +757,10 @@ struct EntryBlock: View {
                         Text(timeLabel(planned: planned, duration: duration))
                             .font(Theme.mono)
                             .foregroundStyle(entry.isRunning ? Theme.gran : Theme.inkSoft)
+                            .opacity(canResume ? 0 : 1)
+                            .overlay(alignment: .trailing) {
+                                if canResume { resumeButton(color) }
+                            }
                     }
                     if !compact && !entry.note.isEmpty {
                         Text(entry.note)
@@ -679,26 +786,29 @@ struct EntryBlock: View {
         .overlay {
             if selected { RoundedRectangle(cornerRadius: 5).strokeBorder(color, lineWidth: 2) }
         }
-        .overlay(alignment: duration < 40 * 60 ? .trailing : .topTrailing) {
-            if hover && !entry.isRunning && !planned && end.timeIntervalSince(start) >= 10 * 60 {
-                Button { store.resume(entry.id) } label: {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.white)
-                        .frame(width: 20, height: 20)
-                        .background(Circle().fill(color))
-                }
-                .buttonStyle(.plain)
-                .padding(3)
-                .help("Resume \(store.name(entry.projectID)) now")
-            }
-        }
+        .opacity(dimmed ? 0.3 : 1)
+        .animation(.easeOut(duration: 0.12), value: dimmed)
         .contentShape(Rectangle())
         .onHover { hover = $0 }
+        .cursor(.openHand)
+        // Select straight away; a second click opens the editor.
+        .simultaneousGesture(TapGesture().onEnded { store.selectedEntryID = entry.id })
         .onTapGesture(count: 2) { store.edit(entry.id) }
-        .onTapGesture { store.selectedEntryID = entry.id }
         .contextMenu { EntryMenu(entry: entry) }
         .help(entry.note.isEmpty ? store.name(entry.projectID) : "\(store.name(entry.projectID)): \(entry.note)")
+    }
+
+    private func resumeButton(_ color: Color) -> some View {
+        Button { store.resume(entry.id) } label: {
+            Image(systemName: "play.fill")
+                .font(.system(size: 8))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(color))
+        }
+        .buttonStyle(.plain)
+        .cursor(.arrow)
+        .help("Resume \(store.name(entry.projectID)) now")
     }
 
     private func timeLabel(planned: Bool, duration: TimeInterval) -> String {
@@ -713,6 +823,7 @@ struct EntryMenu: View {
 
     var body: some View {
         Button("Edit…") { store.edit(entry.id) }
+            .keyboardShortcut("e")
         Menu("Change project") {
             ForEach(store.activeProjects) { p in
                 Button(p.name) { store.setProject(entry.id, p.id) }
@@ -757,7 +868,11 @@ struct GapBlock: View {
             }
             .contentShape(Rectangle())
             .onHover { hover = $0 }
-            .onTapGesture { store.newEntry(start: start, end: end) }
+            .onTapGesture {
+                store.selectedEntryID = nil
+                store.selectedDay = start.startOfDay
+                store.newEntry(start: start, end: end)
+            }
     }
 }
 
@@ -777,5 +892,24 @@ struct ScrollerFinder: NSViewRepresentable {
 
     func updateNSView(_ v: NSView, context: Context) {
         if ref.view == nil { DispatchQueue.main.async { ref.view = v.enclosingScrollView } }
+    }
+}
+
+extension View {
+    /// Shows `cursor` while the pointer is over the view. Balanced even if the view goes away mid-hover.
+    func cursor(_ cursor: NSCursor) -> some View { modifier(CursorModifier(cursor: cursor)) }
+}
+
+private struct CursorModifier: ViewModifier {
+    let cursor: NSCursor
+    @State private var pushed = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                if inside && !pushed { cursor.push(); pushed = true }
+                if !inside && pushed { NSCursor.pop(); pushed = false }
+            }
+            .onDisappear { if pushed { NSCursor.pop(); pushed = false } }
     }
 }

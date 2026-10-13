@@ -137,7 +137,8 @@ struct DayHero: View {
                 .font(.title3)
                 .foregroundStyle(Theme.inkSoft)
         } else {
-            Text("Tracked. Drag on the timeline or press ⌘N to add time.")
+            Text(day > now ? "Planned. Drag on the timeline or press ⌘N to plan time."
+                 : "Tracked this day. Drag on the timeline or press ⌘N to add time.")
                 .font(.title3)
                 .foregroundStyle(Theme.inkSoft)
         }
@@ -265,26 +266,51 @@ struct DayBoundsEditor: View {
                     DatePicker("", selection: $end, displayedComponents: .hourAndMinute).labelsHidden().disabled(!hasEnd)
                 }
             }
+            if let note {
+                Text(note).font(.caption).foregroundStyle(problem ? .red : Theme.inkSoft)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Save") {
-                    store.setDayBounds(day, start: hasStart ? onDay(start) : nil, end: hasEnd ? onDay(end) : nil)
+                    store.setDayBounds(day, start: hasStart ? onDay(start) : nil, end: hasEnd ? endOnDay : nil)
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(hasStart && hasEnd && onDay(end) <= onDay(start))
+                .disabled(problem)
             }
         }
         .padding(16)
         .frame(width: 260)
         .onAppear {
-            let w = store.workday(day)
-            hasStart = w?.start != nil
-            hasEnd = w?.end != nil
-            start = w?.start ?? store.entries(on: day).first?.start ?? day.at(hour: 8, minute: 0)
-            end = w?.end ?? (day.isToday ? Date() : day.at(hour: 16, minute: 0))
+            // The toggles show what was set by hand; the times start from what the day shows.
+            let rec = store.recordedDay(day), w = store.workday(day)
+            hasStart = rec?.start != nil
+            hasEnd = rec?.end != nil
+            start = rec?.start ?? w?.start ?? day.at(hour: 8, minute: 0)
+            end = rec?.end ?? w?.end ?? (day.isToday ? Date() : day.at(hour: 16, minute: 0))
         }
+    }
+
+    /// An end before the start means the day ran past midnight.
+    private var endOnDay: Date {
+        let e = onDay(end)
+        return hasStart && e <= onDay(start) ? e.adding(days: 1) : e
+    }
+
+    private var problem: Bool { hasEnd && !hasStart }
+
+    private var note: String? {
+        if problem { return "Set when the day started as well." }
+        if let w = store.worked(day) {
+            if !hasStart || onDay(start) > w.start { return "Your first entry is at \(Fmt.time(w.start)), so the day starts then." }
+            if (hasEnd && endOnDay < w.end || !hasEnd && !day.isToday) && !(day.isToday && store.running != nil) {
+                return "Your last entry ends at \(Fmt.time(w.end)), so the day ends then."
+            }
+        }
+        if hasEnd && hasStart && endOnDay.startOfDay != day.startOfDay { return "Ends after midnight." }
+        return nil
     }
 
     private func onDay(_ t: Date) -> Date {
@@ -302,10 +328,7 @@ struct ProjectChips: View {
     var body: some View {
         let projects = store.activeProjects
         if projects.isEmpty {
-            Button("Create your first project") {
-                store.pane = .projects
-                NotificationCenter.default.post(name: .focusNewProject, object: nil)
-            }
+            Button("Create your first project") { store.askForNewProject() }
         } else {
             FlowLayout(spacing: 8) {
                 ForEach(Array(projects.enumerated()), id: \.element.id) { i, p in
@@ -358,7 +381,7 @@ struct ProjectChip: View {
             Button(isRunning ? "Stop \(project.name)" : "Start \(project.name)") { store.toggle(project.id) }
             Button("Archive \(project.name)") { store.setArchived(project.id, true) }
             Divider()
-            Button("Edit Projects…") { store.pane = .projects }
+            Button("Go to Projects") { store.pane = .projects }
         }
     }
 }

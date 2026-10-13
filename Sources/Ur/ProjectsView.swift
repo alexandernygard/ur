@@ -109,9 +109,8 @@ struct ProjectsView: View {
         }
         .navigationTitle("Projects")
         .navigationSubtitle(archived.isEmpty ? "\(store.activeProjects.count) active" : "\(store.activeProjects.count) active, \(archived.count) archived")
-        .onReceive(NotificationCenter.default.publisher(for: .focusNewProject)) { _ in
-            DispatchQueue.main.async { newFocused = true }
-        }
+        .onAppear { takeNewProjectRequest() }
+        .onChange(of: store.wantsNewProject) { takeNewProjectRequest() }
         .onReceive(NotificationCenter.default.publisher(for: .newGroup)) { note in
             askForGroup(for: note.object as? UUID)
         }
@@ -175,6 +174,12 @@ struct ProjectsView: View {
         store.addProject(name, group: newGroup)
         newName = ""
         newFocused = true
+    }
+
+    private func takeNewProjectRequest() {
+        guard store.wantsNewProject else { return }
+        store.wantsNewProject = false
+        DispatchQueue.main.async { newFocused = true }
     }
 
     private func askForGroup(for project: UUID? = nil) {
@@ -257,6 +262,13 @@ struct ProjectRow: View {
     let total: TimeInterval
     let onDelete: () -> Void
 
+    /// A name can't be left blank; it goes back to "Untitled project".
+    private func tidyName() {
+        let n = project.name.trimmingCharacters(in: .whitespaces)
+        if n != project.name { project.name = n.isEmpty ? "Untitled project" : n }
+        else if n.isEmpty { project.name = "Untitled project" }
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             Menu {
@@ -277,6 +289,8 @@ struct ProjectRow: View {
 
             TextField("Name", text: $project.name)
                 .textFieldStyle(.plain)
+                .onSubmit { tidyName() }
+                .onDisappear { tidyName() }
                 .font(.body.weight(.medium))
                 .frame(minWidth: 160)
             Menu {

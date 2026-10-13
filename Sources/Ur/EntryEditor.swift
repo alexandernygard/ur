@@ -4,10 +4,34 @@ struct EntryEditor: View {
     @Environment(Store.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State var draft: EntryDraft
-    @FocusState private var noteFocused: Bool
+    @FocusState private var focus: Field?
 
-    private var valid: Bool {
-        draft.projectID != nil && (draft.running || draft.end > draft.start)
+    enum Field { case start, note }
+
+    private var problem: String? {
+        if draft.running { return draft.start > Date() ? "A running entry can't start in the future." : nil }
+        return draft.end > draft.start ? nil : "The end must be after the start."
+    }
+
+    private var valid: Bool { draft.projectID != nil && problem == nil }
+
+    /// Projects to pick from: the active ones, plus this entry's own if it has been archived.
+    private var choices: [Project] {
+        var ps = store.activeProjects
+        if let p = store.project(draft.projectID), p.archived { ps.append(p) }
+        return ps
+    }
+
+    /// What saving will cut into, so it's said before it happens rather than discovered after.
+    private var overlapNote: String? {
+        let end = draft.running ? Date() : draft.end
+        guard end > draft.start else { return nil }
+        let hit = store.overlapping(draft.start, end, except: draft.entryID)
+        guard !hit.isEmpty else { return nil }
+        let names = Array(Set(hit.map { store.name($0.projectID) })).sorted()
+        let list = names.count > 2 ? "\(names[0]), \(names[1]) and \(names.count - 2) more" : names.joined(separator: " and ")
+        let running = hit.contains { $0.isRunning } && !draft.running
+        return "Overlaps \(list). That time will be replaced\(running ? ", and the running timer picks up after this ends" : "")."
     }
 
     var body: some View {
@@ -16,16 +40,25 @@ struct EntryEditor: View {
                 Text(draft.entryID == nil ? "Add time" : "Edit entry")
                     .font(.title2.weight(.semibold))
                 Spacer()
-                Text(draft.running ? "Running" : Fmt.dur(draft.end.timeIntervalSince(draft.start)))
-                    .font(Theme.clock(30))
-                    .foregroundStyle(valid ? (draft.running ? Theme.gran : Theme.ink) : Theme.inkSoft)
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    Text(draft.running ? Fmt.clock(max(0, ctx.date.timeIntervalSince(draft.start))) : Fmt.dur(draft.end.timeIntervalSince(draft.start)))
+                        .font(Theme.clock(30))
+                        .foregroundStyle(valid ? (draft.running ? Theme.gran : Theme.ink) : Theme.inkSoft)
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Project").font(.callout.weight(.medium)).foregroundStyle(Theme.inkSoft)
-                FlowLayout(spacing: 6) {
-                    ForEach(Array(store.activeProjects.enumerated()), id: \.element.id) { i, p in
-                        projectButton(p, index: i)
+                if choices.isEmpty {
+                    HStack {
+                        Text("There are no projects yet.").foregroundStyle(Theme.inkSoft)
+                        Button("Create a Project") { dismiss(); store.askForNewProject() }
+                    }
+                } else {
+                    FlowLayout(spacing: 6) {
+                        ForEach(Array(choices.enumerated()), id: \.element.id) { i, p in
+                            projectButton(p, index: i)
+                        }
                     }
                 }
             }
@@ -43,11 +76,15 @@ struct EntryEditor: View {
                         DatePicker("", selection: startBinding, displayedComponents: .hourAndMinute)
                             .labelsHidden()
                             .datePickerStyle(.field)
+                            .focused($focus, equals: .start)
                         Text("to").foregroundStyle(Theme.inkSoft)
                         if draft.running {
                             Text("now").foregroundStyle(Theme.gran)
                         } else {
-                            DatePicker("", selection: $draft.end, displayedComponents: .hourAndMinute)
+                            if !cal.isDate(draft.end, inSameDayAs: draft.start) {
+                                Text("next day").font(.caption).foregroundStyle(Theme.inkSoft)
+                            }
+                            DatePicker("", selection: endBinding, displayedComponents: .hourAndMinute)
                                 .labelsHidden()
                                 .datePickerStyle(.field)
                         }
@@ -70,17 +107,17 @@ struct EntryEditor: View {
                     Text("Note").foregroundStyle(Theme.inkSoft)
                     TextField("What did you work on?", text: $draft.note)
                         .textFieldStyle(.roundedBorder)
-                        .focused($noteFocused)
+                        .focused($focus, equals: .note)
                 }
             }
 
-            if !valid && draft.projectID != nil {
-                Text("The end time must be after the start time.")
+            if let problem {
+                Text(problem)
                     .font(.callout)
                     .foregroundStyle(.red)
-            } else {
-                Text("Time that overlaps other entries will be reassigned to this one.")
-                    .font(.caption)
+            } else if let overlapNote {
+                Label(overlapNote, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
                     .foregroundStyle(Theme.inkSoft)
             }
 
@@ -90,6 +127,15 @@ struct EntryEditor: View {
                         store.delete(id)
                         dismiss()
                     }
+                    .help("You can undo this with ⌘Z")
+                }
+                if draft.running {
+                    Button("Stop Timer") {
+                        store.save(draft)
+                        store.stop()
+                        dismiss()
+                    }
+                    .disabled(!valid)
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -104,7 +150,10 @@ struct EntryEditor: View {
         }
         .padding(24)
         .frame(width: 520)
-        .onAppear { noteFocused = draft.projectID != nil }
+        .onAppear {
+            // New time usually needs its times typed; an existing entry usually its note.
+            DispatchQueue.main.async { focus = draft.entryID == nil ? .start : .note }
+        }
     }
 
     private func projectButton(_ p: Project, index: Int) -> some View {
@@ -141,12 +190,26 @@ struct EntryEditor: View {
         })
     }
 
+    /// The end is a time of day on the start's day. One a little before the start reads as
+    /// the next morning (23:00 to 01:00); anything longer is more likely a typo, and is flagged.
+    private var endBinding: Binding<Date> {
+        Binding(get: { draft.end }, set: { new in
+            let c = cal.dateComponents([.hour, .minute], from: new)
+            var end = draft.start.startOfDay.at(hour: c.hour ?? 0, minute: c.minute ?? 0)
+            if end <= draft.start && end.adding(days: 1).timeIntervalSince(draft.start) <= 12 * 3600 { end = end.adding(days: 1) }
+            draft.end = end
+        })
+    }
+
     /// Moving the start past the end pushes the end along, keeping the length.
     private var startBinding: Binding<Date> {
         Binding(get: { draft.start }, set: { new in
             let length = draft.end.timeIntervalSince(draft.start)
             draft.start = new
-            if !draft.running && draft.end <= new { draft.end = new.addingTimeInterval(max(length, 900)) }
+            // Keep the end ahead of the start and within a day of it.
+            if !draft.running && (draft.end <= new || draft.end.timeIntervalSince(new) > 24 * 3600) {
+                draft.end = new.addingTimeInterval(min(max(length, 900), 12 * 3600))
+            }
         })
     }
 }
